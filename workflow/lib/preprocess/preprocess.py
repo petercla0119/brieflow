@@ -6,6 +6,12 @@ import nd2
 from typing import Union, List
 from pathlib import Path
 
+# Libraries for OME-Zarr
+import zarr
+from ome_zarr.io import parse_url
+from ome_zarr.writer import write_image
+import xarray as xr
+
 
 def extract_tile_metadata(
     tile_fp: str,
@@ -171,3 +177,208 @@ def nd2_to_tiff(
         print(f"Final dimensions (CYX): {result.shape}")
 
     return result.astype(np.uint16)
+
+def nd2_to_ome_zarr(
+    input_file: Union[str, Path],
+    output_dir: Union[str, Path],
+    chunk_dims: tuple = (1, 1, 256, 256),
+    verbose: bool = False,
+) -> bool:
+    """Converts a single ND2 file to a 5D OME-Zarr file (TCZYX).
+
+    This function reads an ND2 file, extracts its metadata and pixel data,
+    and writes it to a pyramid-less OME-Zarr store. It also saves the
+    full raw metadata from the ND2 file into a separate JSON file for verification.
+
+    Args:
+        input_file (Union[str, Path]): Path to the input ND2 file.
+        output_dir (Union[str, Path]): Directory to save the OME-Zarr output.
+        chunk_dims (tuple, optional): The chunk size for the Zarr array along (C, Z, Y, X).
+                                      Defaults to (1, 1, 256, 256).
+        verbose (bool, optional): If True, prints processing information. Defaults to False.
+    
+    Returns:
+        bool: True if conversion was successful, False otherwise.
+    
+    Raises:
+        FileNotFoundError: If input file doesn't exist.
+        ValueError: If input file is not a valid ND2 file.
+        RuntimeError: If conversion fails due to unsupported dimensions or other issues.
+    """
+    input_file = Path(input_file)
+    output_dir = Path(output_dir)
+    
+    # Validate input file
+    if not input_file.exists():
+        raise FileNotFoundError(f"Input file not found: {input_file}")
+    
+    if not input_file.suffix.lower() == '.nd2':
+        raise ValueError(f"Input file must be an ND2 file, got: {input_file.suffix}")
+    
+    # Create output directory
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise RuntimeError(f"Failed to create output directory {output_dir}: {e}")
+
+    if verbose:
+        print(f"Processing {input_file.name}...")
+
+    try:
+        with nd2.ND2File(input_file) as images:
+            # --- 1. Extract data as a dask-backed xarray for memory efficiency ---
+            try:
+                xarr = images.to_xarray(delayed=True, squeeze=False)
+            except Exception as e:
+                raise RuntimeError(f"Failed to read ND2 file as xarray: {e}")
+            
+            if verbose:
+                print(f"Original dimensions: {xarr.dims} with shape {xarr.shape}")
+
+            # --- 2. Handle dimension mapping and standardization ---
+            # Map common ND2 dimensions to OME-Zarr dimensions
+            dim_mapping = {
+                'P': 'T',  # Position -> Time (for single position files)
+                'T': 'T',  # Time -> Time
+                'C': 'C',  # Channel -> Channel
+                'Z': 'Z',  # Z -> Z
+                'Y': 'Y',  # Y -> Y
+                'X': 'X',  # X -> X
+            }
+            
+            # Rename dimensions to standard names
+            rename_dict = {}
+            for old_dim in xarr.dims:
+                if old_dim in dim_mapping:
+                    rename_dict[old_dim] = dim_mapping[old_dim]
+                else:
+                    if verbose:
+                        print(f"Warning: Unknown dimension '{old_dim}' will be treated as additional dimension")
+            
+            if rename_dict:
+                xarr = xarr.rename(rename_dict)
+                if verbose:
+                    print(f"Renamed dimensions: {rename_dict}")
+            
+            # --- 3. Standardize to 5D TCZYX format ---
+            # Handle position dimension by taking first position if multiple exist
+            if 'P' in xarr.dims and xarr.dims['P'] > 1:
+                if verbose:
+                    print(f"Multiple positions detected ({xarr.dims['P']}), using first position")
+                xarr = xarr.isel(P=0)
+            elif 'P' in xarr.dims:
+                # Single position, rename to T
+                xarr = xarr.rename({'P': 'T'})
+            
+            # Ensure all 5 dimensions are present, adding dummy ones if necessary
+            for dim in "TCZYX":
+                if dim not in xarr.dims:
+                    xarr = xarr.expand_dims(dim, axis=0)
+                    if verbose:
+                        print(f"Added missing dimension '{dim}'")
+            
+            # Check if we have the correct dimensions for OME-Zarr
+            expected_dims = set("TCZYX")
+            actual_dims = set(xarr.dims)
+            
+            if not expected_dims.issubset(actual_dims):
+                missing_dims = expected_dims - actual_dims
+                extra_dims = actual_dims - expected_dims
+                error_msg = f"Cannot convert to OME-Zarr format. "
+                if missing_dims:
+                    error_msg += f"Missing dimensions: {missing_dims}. "
+                if extra_dims:
+                    error_msg += f"Extra dimensions: {extra_dims}. "
+                error_msg += f"Expected: {expected_dims}, Got: {actual_dims}"
+                raise RuntimeError(error_msg)
+            
+            # Transpose to the standard OME-Zarr order
+            try:
+                data = xarr.transpose("T", "C", "Z", "Y", "X")
+            except Exception as e:
+                raise RuntimeError(f"Failed to transpose dimensions to TCZYX order: {e}")
+
+            if verbose:
+                print(f"Standardized 5D shape (TCZYX): {data.shape}")
+
+            # --- 4. Prepare OME-Zarr metadata ---
+            axes = [
+                {"name": "t", "type": "time"},
+                {"name": "c", "type": "channel"},
+                {"name": "z", "type": "space"},
+                {"name": "y", "type": "space"},
+                {"name": "x", "type": "space"},
+            ]
+
+            # Get voxel sizes for scaling transformation
+            try:
+                voxel_size = images.voxel_size()
+                transformations = [
+                    {
+                        "type": "scale",
+                        "scale": [
+                            images.experiment[0].period.total_seconds() if images.experiment else 1.0,
+                            1.0,  # Channel scale
+                            voxel_size.z,
+                            voxel_size.y,
+                            voxel_size.x,
+                        ],
+                    }
+                ]
+            except Exception as e:
+                if verbose:
+                    print(f"Warning: Could not extract voxel size, using default scaling: {e}")
+                transformations = [
+                    {
+                        "type": "scale",
+                        "scale": [1.0, 1.0, 1.0, 1.0, 1.0],
+                    }
+                ]
+            
+            # --- 5. Write to OME-Zarr ---
+            zarr_path = output_dir / f"{input_file.stem}.zarr"
+            try:
+                store = parse_url(str(zarr_path), mode="w").store
+                root_group = zarr.group(store=store, overwrite=True)
+
+                # Define storage options with chunking
+                # Adjust chunks to match the final 5D data shape
+                final_chunks = (1,) + chunk_dims # Add time chunk
+                
+                write_image(
+                    image=data.data,  # Pass the underlying dask array
+                    group=root_group,
+                    axes=axes,
+                    storage_options={'chunks': final_chunks},
+                )
+
+                if verbose:
+                    print(f"Successfully wrote OME-Zarr to: {zarr_path}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to write OME-Zarr file: {e}")
+
+            # --- 6. Export raw metadata for verification ---
+            metadata_filename = output_dir / f"{input_file.stem}_metadata.json"
+            try:
+                # nd2's repr is quite informative and serializes well
+                with open(metadata_filename, "w") as f:
+                    f.write(repr(images.metadata))
+                if verbose:
+                    print(f"Full metadata exported to: {metadata_filename}")
+            except Exception as e:
+                if verbose:
+                    print(f"Warning: Could not export full metadata due to serialization error: {e}")
+
+            return True
+
+    except FileNotFoundError:
+        raise
+    except ValueError:
+        raise
+    except RuntimeError:
+        raise
+    except Exception as e:
+        error_msg = f"Unexpected error occurred while processing {input_file.name}: {e}"
+        if verbose:
+            print(error_msg)
+        raise RuntimeError(error_msg)
