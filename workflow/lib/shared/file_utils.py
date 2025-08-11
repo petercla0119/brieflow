@@ -168,3 +168,37 @@ def validate_dtypes(df):
                     pass
 
     return df
+
+
+def fix_combo_file(input_file: Path, output_file: Path, plate_value: str = "1") -> None:
+    """Add missing 'plate' column to combo TSV file.
+    
+    This function resolves the Snakemake wildcard error: "No values given for wildcard 'plate'"
+    by ensuring the combo TSV files have the required 'plate' column.
+    
+    Args:
+        input_file (Path): Path to the input TSV file that may be missing the 'plate' column.
+        output_file (Path): Path where the fixed TSV file will be saved.
+        plate_value (str): The value to use for the 'plate' column. Defaults to "1".
+    
+    Returns:
+        None: The function modifies the file in place.
+    """
+    print(f"Processing {input_file}...")
+    
+    # Read the TSV file
+    df = pd.read_csv(input_file, sep='\t')
+    print(f"Original columns: {list(df.columns)}")
+    
+    # Check if plate column already exists
+    if 'plate' in df.columns:
+        print(f"Plate column already exists in {input_file}")
+        return
+    
+    # Add plate column at the beginning
+    df.insert(0, 'plate', plate_value)
+    print(f"Added 'plate' column with value '{plate_value}'")
+    
+    # Save the fixed file
+    df.to_csv(output_file, sep='\t', index=False)
+    print(f"Fixed file saved to: {output_file}")

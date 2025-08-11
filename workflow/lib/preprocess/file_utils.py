@@ -6,10 +6,10 @@ from typing import List, Union
 
 def get_sample_fps(
     samples_df: pd.DataFrame,
-    plate: int = None,
-    well: str = None,
-    tile: int = None,
-    cycle: int = None,
+    plate: Union[int, str] = None,
+    well: Union[int, str] = None,
+    tile: Union[int, str] = None,
+    cycle: Union[int, str] = None,
     channel: str = None,
     round_order: List[int] = None,
     channel_order: List[str] = None,
@@ -19,10 +19,10 @@ def get_sample_fps(
 
     Args:
         samples_df (pd.DataFrame): DataFrame containing sample data.
-        plate (int, optional): Plate number to filter by. Defaults to None.
-        well (str, optional): Well identifier to filter by. Defaults to None.
-        tile (int, optional): Tile number to filter by. Defaults to None.
-        cycle (int, optional): Cycle number to filter by. Defaults to None.
+        plate (Union[int, str], optional): Plate number to filter by. Defaults to None.
+        well (Union[int, str], optional): Well identifier to filter by. Defaults to None.
+        tile (Union[int, str], optional): Tile number to filter by. Defaults to None.
+        cycle (Union[int, str], optional): Cycle number to filter by. Defaults to None.
         channel (str, optional): Channel to filter by. Defaults to None.
         round_order (List[int], optional): Order of rounds to return. Defaults to None.
         channel_order (List[str], optional): Order of channels. Defaults to None.
@@ -32,14 +32,20 @@ def get_sample_fps(
         Union[str, List[str]]: Either a single filepath or ordered list of filepaths
     """
     filtered_df = samples_df
+    
+    # Handle type conversion for numeric wildcards (Snakemake passes them as strings)
     if plate is not None:
-        filtered_df = filtered_df[filtered_df["plate"] == int(plate)]
+        plate_val = int(plate) if isinstance(plate, str) else plate
+        filtered_df = filtered_df[filtered_df["plate"] == plate_val]
     if well is not None:
-        filtered_df = filtered_df[filtered_df["well"] == well]
+        well_val = int(well) if isinstance(well, str) else well
+        filtered_df = filtered_df[filtered_df["well"] == well_val]
     if tile is not None:
-        filtered_df = filtered_df[filtered_df["tile"] == int(tile)]
+        tile_val = int(tile) if isinstance(tile, str) else tile
+        filtered_df = filtered_df[filtered_df["tile"] == tile_val]
     if cycle is not None:
-        filtered_df = filtered_df[filtered_df["cycle"] == int(cycle)]
+        cycle_val = int(cycle) if isinstance(cycle, str) else cycle
+        filtered_df = filtered_df[filtered_df["cycle"] == cycle_val]
     if channel is not None:
         filtered_df = filtered_df[filtered_df["channel"] == channel]
 
@@ -54,13 +60,17 @@ def get_sample_fps(
             )
             filtered_df = samples_df
             if plate is not None:
-                filtered_df = filtered_df[filtered_df["plate"] == int(plate)]
+                plate_val = int(plate) if isinstance(plate, str) else plate
+                filtered_df = filtered_df[filtered_df["plate"] == plate_val]
             if well is not None:
-                filtered_df = filtered_df[filtered_df["well"] == well]
+                well_val = int(well) if isinstance(well, str) else well
+                filtered_df = filtered_df[filtered_df["well"] == well_val]
             if tile is not None:
-                filtered_df = filtered_df[filtered_df["tile"] == int(tile)]
+                tile_val = int(tile) if isinstance(tile, str) else tile
+                filtered_df = filtered_df[filtered_df["tile"] == tile_val]
             if cycle is not None:
-                filtered_df = filtered_df[filtered_df["cycle"] == int(cycle)]
+                cycle_val = int(cycle) if isinstance(cycle, str) else cycle
+                filtered_df = filtered_df[filtered_df["cycle"] == cycle_val]
             if channel is not None:
                 filtered_df = filtered_df[filtered_df["channel"] == channel]
 
