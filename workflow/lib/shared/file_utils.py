@@ -201,4 +201,66 @@ def fix_combo_file(input_file: Path, output_file: Path, plate_value: str = "1") 
     
     # Save the fixed file
     df.to_csv(output_file, sep='\t', index=False)
-    print(f"Fixed file saved to: {output_file}")
+    print(f"Fixed file saved to {output_file}")
+
+
+def fix_combo_files(config_dir: Path = None, plate_value: str = "1", backup: bool = True) -> None:
+    """Fix missing 'plate' column in both combo TSV files.
+    
+    This function resolves the Snakemake wildcard error: "No values given for wildcard 'plate'"
+    by ensuring both sbs_combo.tsv and phenotype_combo.tsv have the required 'plate' column.
+    
+    Args:
+        config_dir (Path): Directory containing the combo TSV files. 
+                          Defaults to current working directory / "config".
+        plate_value (str): The value to use for the 'plate' column. Defaults to "1".
+        backup (bool): Whether to create backup files before overwriting. Defaults to True.
+    
+    Returns:
+        None: The function modifies the files in place.
+    """
+    if config_dir is None:
+        config_dir = Path.cwd() / "config"
+    
+    print(f"Fixing combo files in: {config_dir}")
+    
+    # Fix SBS combo file
+    sbs_input = config_dir / "sbs_combo.tsv"
+    sbs_output = config_dir / "sbs_combo_fixed.tsv"
+    
+    if sbs_input.exists():
+        if backup:
+            backup_file = config_dir / "sbs_combo.tsv.backup"
+            backup_file.write_text(sbs_input.read_text())
+            print(f"Original SBS file backed up to: {backup_file}")
+        
+        fix_combo_file(sbs_input, sbs_output, plate_value)
+        
+        # Replace original with fixed version
+        sbs_output.replace(sbs_input)
+        print(f"SBS combo file fixed successfully")
+    else:
+        print(f"Warning: {sbs_input} not found")
+    
+    # Fix phenotype combo file
+    phenotype_input = config_dir / "phenotype_combo.tsv"
+    phenotype_output = config_dir / "phenotype_combo_fixed.tsv"
+    
+    if phenotype_input.exists():
+        if backup:
+            backup_file = config_dir / "phenotype_combo.tsv.backup"
+            backup_file.write_text(phenotype_input.read_text())
+            print(f"Original phenotype file backed up to: {backup_file}")
+        
+        fix_combo_file(phenotype_input, phenotype_output, plate_value)
+        
+        # Replace original with fixed version
+        phenotype_output.replace(phenotype_input)
+        print(f"Phenotype combo file fixed successfully")
+    else:
+        print(f"Warning: {phenotype_input} not found")
+    
+    print("\n Combo files fixed successfully!")
+    print("You can now run the preprocessing script again.")
+
+

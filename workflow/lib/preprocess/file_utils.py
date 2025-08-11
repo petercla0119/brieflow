@@ -126,4 +126,8 @@ def get_sample_fps(
         ]
 
     # Otherwise return single file path
-    return filtered_df["sample_fp"].iloc[0]
+    if len(filtered_df) == 0:
+        # Handle case where no files match the criteria
+        return ""
+    else:
+        return filtered_df["sample_fp"].iloc[0]
