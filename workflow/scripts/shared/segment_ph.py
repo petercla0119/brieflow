@@ -11,16 +11,16 @@ params = snakemake.params.config
 # Choose segmentation method based on parameter
 method = params.get("segmentation_method", "cellpose")
 #UNCOMMENT WHEN DOING PHENOTYPING
-#segment_cells = params.get("segment_cells_phenotype", True)
+segment_cells = params.get("segment_cells_phenotype", True)
 #UNCOMMENT WHEN DOING SBS
-segment_cells = False
+#segment_cells = False
 
 if method == "cellpose":
     # Segment cells using cellpose
     # USE THIS LINE FOR SBS
-    from lib.shared.segment_cellpose import segment_cellpose
+    #from lib.shared.segment_cellpose import segment_cellpose
     # USE THIS LINE FOR PHENOTYPE
-    #from lib.shared.segment_cellpose_phenotype import segment_cellpose
+    from lib.shared.segment_cellpose_phenotype import segment_cellpose
 
     if segment_cells:
         nuclei_data, cells_data, counts_df = segment_cellpose(
