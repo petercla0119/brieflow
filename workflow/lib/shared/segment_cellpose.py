@@ -26,10 +26,7 @@ from skimage.segmentation import clear_border
 def segment_cellpose(
     data,
     dapi_index,
-    cyto_index,
     nuclei_diameter,
-    cell_diameter,
-    cyto_model="cyto3",
     cellpose_kwargs=dict(
         flow_threshold=0.4,
         cellprob_threshold=0,
@@ -38,7 +35,7 @@ def segment_cellpose(
         cell_flow_threshold=None,
         cell_cellprob_threshold=None,
     ),
-    cells=True,
+    cells=False,
     reconcile="consensus",
     logscale=True,
     return_counts=False,
@@ -100,7 +97,7 @@ def segment_cellpose(
 
     # Prepare data for Cellpose by creating a merged RGB image
     rgb = prepare_cellpose(
-        data, dapi_index, cyto_index, logscale, log_kwargs=log_kwargs
+        data, dapi_index, logscale, log_kwargs=log_kwargs
     )
 
     counts = {}
@@ -111,8 +108,6 @@ def segment_cellpose(
             nuclei, cells, seg_counts = segment_cellpose_rgb(
                 rgb,
                 nuclei_diameter,
-                cell_diameter,
-                cyto_model=cyto_model,
                 reconcile=reconcile,
                 return_counts=True,
                 gpu=gpu,
@@ -157,7 +152,7 @@ def segment_cellpose(
             return nuclei
 
 
-def prepare_cellpose(data, dapi_index, cyto_index, logscale=True, log_kwargs=dict()):
+def prepare_cellpose(data, dapi_index, logscale=True, log_kwargs=dict()):
     """Prepare a three-channel RGB image for use with the Cellpose GUI.
 
     Args:
@@ -172,15 +167,9 @@ def prepare_cellpose(data, dapi_index, cyto_index, logscale=True, log_kwargs=dic
     """
     # Extract DAPI and cytoplasmic channel images from the data
     dapi = data[dapi_index]
-    cyto = data[cyto_index]
 
     # Create a blank array with the same shape as the DAPI channel
     blank = np.zeros_like(dapi)
-
-    # Apply log scaling to the cytoplasmic channel if specified
-    if logscale:
-        cyto = image_log_scale(cyto, **log_kwargs)
-        cyto /= cyto.max()  # Normalize the image for uint8 conversion
 
     # Normalize the intensity of the DAPI channel and scale it to the range [0, 1]
     dapi_upper = np.percentile(dapi, 99.5)
@@ -188,19 +177,16 @@ def prepare_cellpose(data, dapi_index, cyto_index, logscale=True, log_kwargs=dic
     dapi[dapi > 1] = 1
 
     # Convert the channels to uint8 format for RGB image creation
-    red, green, blue = img_as_ubyte(blank), img_as_ubyte(cyto), img_as_ubyte(dapi)
+    red, blue = img_as_ubyte(blank), img_as_ubyte(dapi)
 
     # Stack the channels to create the RGB image and transpose the dimensions
     # return np.array([red, green, blue]).transpose([1, 2, 0])
-    return np.array([red, green, blue])
+    return np.array([red, blue])
 
 
 def estimate_diameters(
     data,
     dapi_index,
-    cyto_index,
-    channels=[2, 3],  # Default channels for cell estimation
-    cyto_model="cyto3",
     cellpose_kwargs=dict(flow_threshold=0.4, cellprob_threshold=0),
     gpu=False,
     logscale=True,
@@ -225,26 +211,19 @@ def estimate_diameters(
         "log_kwargs", dict()
     )  # Extract log_kwargs from cellpose_kwargs
     rgb = prepare_cellpose(
-        data, dapi_index, cyto_index, logscale, log_kwargs=log_kwargs
+        data, dapi_index, logscale, log_kwargs=log_kwargs
     )
 
     # Find optimal nuclei diameter
     print("Estimating nuclei diameters...")
     model_nuclei = Cellpose(model_type="nuclei", gpu=gpu)
-    diam_nuclear, _ = model_nuclei.sz.eval(rgb, channels=[3, 0])
+    print(rgb.shape)
+    diam_nuclear, _ = model_nuclei.sz.eval(rgb, channels=[2, 0])
     diam_nuclear = np.maximum(5.0, diam_nuclear)
     diam_nuclear = float(diam_nuclear)
     print(f"Estimated nuclear diameter: {diam_nuclear:.1f} pixels")
 
-    # Find optimal cell diameter
-    print("Estimating cell diameters...")
-    model_cyto = Cellpose(model_type=cyto_model, gpu=gpu)
-    diam_cell, _ = model_cyto.sz.eval(rgb, channels=channels)
-    diam_cell = np.maximum(5.0, diam_cell)
-    diam_cell = float(diam_cell)
-    print(f"Estimated cell diameter: {diam_cell:.1f} pixels")
-
-    return diam_nuclear, diam_cell
+    return diam_nuclear
 
 
 def segment_cellpose_rgb(
@@ -295,7 +274,7 @@ def segment_cellpose_rgb(
 
     # Segment nuclei using nuclei-specific parameters
     nuclei, _, _, _ = model_dapi.eval(
-        rgb, channels=[3, 0], diameter=nuclei_diameter, **nuclei_kwargs
+        rgb, channels=[2, 0], diameter=nuclei_diameter, **nuclei_kwargs
     )
 
     # Segment cells using cell-specific parameters
@@ -370,7 +349,7 @@ def segment_cellpose_nuclei_rgb(
 
     # Segment nuclei using Cellpose from the RGB image
     nuclei, _, _, _ = model_dapi.eval(
-        rgb, channels=[3, 0], diameter=nuclei_diameter, **kwargs
+        rgb, channels=[2, 0], diameter=nuclei_diameter, **kwargs
     )
 
     # Print the number of nuclei found before and after removing edges
@@ -390,7 +369,7 @@ def segment_cellpose_nuclei_rgb(
     return nuclei
 
 
-def reconcile_nuclei_cells(nuclei, cells, how="consensus"):
+def reconcile_nuclei_cells(nuclei, how="consensus"):
     """Reconcile nuclei and cells labels based on their overlap.
 
     Args:
@@ -498,8 +477,8 @@ def reconcile_nuclei_cells(nuclei, cells, how="consensus"):
         )
 
     # Convert arrays to integers
-    nuclei, cells = nuclei.astype(int), cells.astype(int)
-    return nuclei, cells
+    nuclei = nuclei.astype(int)
+    return nuclei
 
 
 def center_pixels(label_image):
@@ -582,3 +561,4 @@ def relabel_array(arr, new_label_dict):
                 new_val  # Map the old value to the new value in the relabeling array
             )
     return arr_[arr]  # Return the relabeled array
+
