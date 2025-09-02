@@ -44,7 +44,7 @@ uniprot_data = uniprot_data[
 ]
 # merge uniprot data with clustering results
 phate_leiden_clustering = phate_leiden_clustering.merge(
-    uniprot_data, how="left", left_on="gene_symbol_0", right_on="gene_name"
+    uniprot_data, how="left", left_on="gene_0", right_on="gene_name"
 ).drop(columns="gene_name")
 
 # calculate potential to nontargeting
@@ -54,7 +54,7 @@ average_distance_df = calculate_potential_to_nontargeting(
 
 # merge clustering data with potential_df
 phate_leiden_clustering = phate_leiden_clustering.merge(
-    average_distance_df, how="left", left_on="gene_symbol_0", right_on="gene_symbol_0"
+    average_distance_df, how="left", left_on="gene_0", right_on="gene_0"
 )
 
 # save clustering results

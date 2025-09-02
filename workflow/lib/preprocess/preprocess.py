@@ -171,6 +171,12 @@ def nd2_to_tiff(
         image_arrays.append(img_array)
 
     # Concatenate along channel axis (axis 0)
+    if len(image_arrays) == 0:
+        raise ValueError(
+            "No image arrays to concatenate. This usually means the channel_order "
+            "did not match any available channels for the selected sample(s), or the "
+            "file list was empty."
+        )
     result = np.concatenate(image_arrays, axis=0)
 
     if verbose:

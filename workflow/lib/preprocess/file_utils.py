@@ -2,6 +2,7 @@
 
 import pandas as pd
 from typing import List, Union
+import re
 
 
 def get_sample_fps(
@@ -32,14 +33,35 @@ def get_sample_fps(
         Union[str, List[str]]: Either a single filepath or ordered list of filepaths
     """
     filtered_df = samples_df
+
+    def _normalize_well_input(well_value: Union[int, str]):
+        """Convert well identifiers like "Well6" or "6" to int 6 when appropriate.
+
+        If the value is a non-numeric string (e.g., "A1"), return it unchanged.
+        """
+        if well_value is None:
+            return None
+        if isinstance(well_value, str):
+            match = re.fullmatch(r"Well(\d+)", well_value)
+            if match:
+                return int(match.group(1))
+            return int(well_value) if well_value.isdigit() else well_value
+        return well_value
     
     # Handle type conversion for numeric wildcards (Snakemake passes them as strings)
     if plate is not None:
         plate_val = int(plate) if isinstance(plate, str) else plate
         filtered_df = filtered_df[filtered_df["plate"] == plate_val]
     if well is not None:
-        well_val = int(well) if isinstance(well, str) else well
-        filtered_df = filtered_df[filtered_df["well"] == well_val]
+        well_val = _normalize_well_input(well)
+        if isinstance(well_val, int):
+            # Accept both numeric wells and string-formatted wells like "Well6"
+            filtered_df = filtered_df[
+                (filtered_df["well"] == well_val)
+                | (filtered_df["well"] == f"Well{well_val}")
+            ]
+        else:
+            filtered_df = filtered_df[filtered_df["well"] == well_val]
     if tile is not None:
         tile_val = int(tile) if isinstance(tile, str) else tile
         filtered_df = filtered_df[filtered_df["tile"] == tile_val]
@@ -63,8 +85,14 @@ def get_sample_fps(
                 plate_val = int(plate) if isinstance(plate, str) else plate
                 filtered_df = filtered_df[filtered_df["plate"] == plate_val]
             if well is not None:
-                well_val = int(well) if isinstance(well, str) else well
-                filtered_df = filtered_df[filtered_df["well"] == well_val]
+                well_val = _normalize_well_input(well)
+                if isinstance(well_val, int):
+                    filtered_df = filtered_df[
+                        (filtered_df["well"] == well_val)
+                        | (filtered_df["well"] == f"Well{well_val}")
+                    ]
+                else:
+                    filtered_df = filtered_df[filtered_df["well"] == well_val]
             if tile is not None:
                 tile_val = int(tile) if isinstance(tile, str) else tile
                 filtered_df = filtered_df[filtered_df["tile"] == tile_val]
@@ -119,11 +147,29 @@ def get_sample_fps(
     # If no rounds specified but we have channels and channel order
     if "channel" in filtered_df.columns and channel_order is not None:
         channel_to_file = dict(zip(filtered_df["channel"], filtered_df["sample_fp"]))
-        return [
+        ordered_files = [
             channel_to_file[channel]
             for channel in channel_order
             if channel in channel_to_file
         ]
+        if len(ordered_files) == 0:
+            requested = ", ".join(channel_order)
+            available = ", ".join(sorted(channel_to_file.keys()))
+            details = []
+            if plate is not None:
+                details.append(f"plate={plate}")
+            if well is not None:
+                details.append(f"well={well}")
+            if tile is not None:
+                details.append(f"tile={tile}")
+            if cycle is not None:
+                details.append(f"cycle={cycle}")
+            where = ", ".join(details) if details else "(no filters)"
+            raise ValueError(
+                "No channels from channel_order found for selection: "
+                f"requested [{requested}], available [{available}] at {where}."
+            )
+        return ordered_files
 
     # Otherwise return single file path
     if len(filtered_df) == 0:
