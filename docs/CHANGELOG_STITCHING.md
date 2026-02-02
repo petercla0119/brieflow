@@ -10,9 +10,10 @@ This document tracks all changes made during the integration of GPU-accelerated 
 
 **Key Design Decisions**:
 1. Import stitching package as dependency (not copy)
-2. Pipeline position: After tile conversion, before illumination correction
+2. Pipeline position: After illumination correction calculation
 3. Complement existing merge stitching (preprocessing stitching for early visualization/QC)
 4. Optional via config (disabled by default)
+5. Auto-detect tile overlap from stage coordinate metadata
 
 ---
 
