@@ -90,3 +90,34 @@ Validation applies sensible defaults while allowing override of all parameters.
 All 21 tests pass. GPU fallback warning is emitted when GPU requested but unavailable.
 
 ---
+
+## [2026-02-02] - Step 2.1 & 2.2: Add Stitch Estimation Functions
+
+### Changes
+- File: `workflow/lib/preprocess/stitch.py`
+  - Added: `estimate_stitch_from_metadata()` - Convert stage coordinates to pixel shifts
+  - Added: `estimate_stitch_from_tiles()` - Phase correlation-based position estimation
+  - Added: `_format_tile_name()` - Helper to format tile IDs for stitching library
+
+- File: `tests/unit/preprocess/test_stitch.py`
+  - Added: 9 new tests for estimation functions:
+    - `TestFormatTileName` (3 tests): Tile name formatting
+    - `TestEstimateStitchFromMetadata` (4 tests): Coordinate-based estimation
+    - `TestEstimateStitchFromTiles` (2 tests): Phase correlation estimation
+
+### Rationale
+Two estimation methods provide flexibility:
+- `coordinate_based`: Fast, uses stage metadata, good when coordinates are accurate
+- `phase_correlation`: Slower but more accurate, uses GPU when available
+
+Both methods output the same YAML config format for consumption by tile assembly.
+
+### Tests Added
+- `TestFormatTileName` (3 tests): Integer, formatted string, numeric string inputs
+- `TestEstimateStitchFromMetadata` (4 tests): Valid data, missing columns, invalid input, NaN handling
+- `TestEstimateStitchFromTiles` (2 tests): Missing store, library call verification
+
+### Issues/Notes
+All 30 tests pass. Phase correlation function wraps the external stitch library.
+
+---

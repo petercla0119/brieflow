@@ -261,3 +261,170 @@ class TestIsStitchingEnabled:
         config = {"preprocess": {"stitch": {"enabled": True}}}
         assert is_stitching_enabled(config, "phenotype") is True
         assert is_stitching_enabled(config, "sbs") is True
+
+
+class TestFormatTileName:
+    """Tests for _format_tile_name() helper function."""
+
+    def test_integer_tile_id(self):
+        """Test formatting integer tile IDs."""
+        from lib.preprocess.stitch import _format_tile_name
+
+        assert _format_tile_name(0) == "000000"
+        assert _format_tile_name(5) == "005000"
+        assert _format_tile_name(123) == "123000"
+
+    def test_already_formatted_string(self):
+        """Test that already formatted strings pass through."""
+        from lib.preprocess.stitch import _format_tile_name
+
+        assert _format_tile_name("000001") == "000001"
+        assert _format_tile_name("123456") == "123456"
+
+    def test_numeric_string(self):
+        """Test parsing numeric strings."""
+        from lib.preprocess.stitch import _format_tile_name
+
+        assert _format_tile_name("5") == "005000"
+        assert _format_tile_name("42") == "042000"
+
+
+class TestEstimateStitchFromMetadata:
+    """Tests for estimate_stitch_from_metadata() function."""
+
+    def test_valid_metadata(self, tmp_path):
+        """Test estimation with valid metadata."""
+        import pandas as pd
+        from lib.preprocess.stitch import estimate_stitch_from_metadata
+
+        # Create test metadata
+        metadata = pd.DataFrame({
+            "tile": [0, 1, 2, 3],
+            "x_pos": [0.0, 100.0, 0.0, 100.0],  # µm
+            "y_pos": [0.0, 0.0, 100.0, 100.0],  # µm
+        })
+
+        output_path = tmp_path / "stitch_config.yml"
+
+        shifts = estimate_stitch_from_metadata(
+            metadata_df=metadata,
+            tile_size=(2048, 2048),
+            pixel_size=0.5,  # 0.5 µm/pixel -> 100µm = 200px
+            well="A/01",
+            output_path=output_path,
+        )
+
+        # Check shifts are calculated correctly
+        assert len(shifts) == 4
+        # With 0.5 µm/pixel, 100µm = 200 pixels
+        # Tile 0 at origin should have shift [0, 0]
+        assert shifts["A/01/000000"] == [0, 0]
+
+        # Check output file was created
+        assert output_path.exists()
+
+    def test_missing_columns_raises(self, tmp_path):
+        """Test that missing columns raise ValueError."""
+        import pandas as pd
+        from lib.preprocess.stitch import estimate_stitch_from_metadata
+
+        metadata = pd.DataFrame({"tile": [0, 1], "x_pos": [0.0, 100.0]})
+        output_path = tmp_path / "stitch_config.yml"
+
+        with pytest.raises(ValueError, match="missing required columns"):
+            estimate_stitch_from_metadata(
+                metadata_df=metadata,
+                tile_size=(2048, 2048),
+                pixel_size=0.5,
+                well="A/01",
+                output_path=output_path,
+            )
+
+    def test_invalid_dataframe_raises(self, tmp_path):
+        """Test that non-DataFrame raises ValueError."""
+        from lib.preprocess.stitch import estimate_stitch_from_metadata
+
+        output_path = tmp_path / "stitch_config.yml"
+
+        with pytest.raises(ValueError, match="must be a pandas DataFrame"):
+            estimate_stitch_from_metadata(
+                metadata_df="not a dataframe",
+                tile_size=(2048, 2048),
+                pixel_size=0.5,
+                well="A/01",
+                output_path=output_path,
+            )
+
+    def test_all_nan_coordinates_raises(self, tmp_path):
+        """Test that all NaN coordinates raise ValueError."""
+        import pandas as pd
+        import numpy as np
+        from lib.preprocess.stitch import estimate_stitch_from_metadata
+
+        metadata = pd.DataFrame({
+            "tile": [0, 1],
+            "x_pos": [np.nan, np.nan],
+            "y_pos": [np.nan, np.nan],
+        })
+        output_path = tmp_path / "stitch_config.yml"
+
+        with pytest.raises(ValueError, match="No valid stage coordinates"):
+            estimate_stitch_from_metadata(
+                metadata_df=metadata,
+                tile_size=(2048, 2048),
+                pixel_size=0.5,
+                well="A/01",
+                output_path=output_path,
+            )
+
+
+class TestEstimateStitchFromTiles:
+    """Tests for estimate_stitch_from_tiles() function."""
+
+    def test_missing_input_store_raises(self, tmp_path):
+        """Test that missing input store raises FileNotFoundError."""
+        from lib.preprocess.stitch import estimate_stitch_from_tiles
+
+        # Mock the stitch library import to test FileNotFoundError
+        mock_estimate = MagicMock()
+        with patch.dict(sys.modules, {
+            "stitch": MagicMock(),
+            "stitch.stitch": MagicMock(),
+            "stitch.stitch.assemble": MagicMock(estimate_stitch=mock_estimate),
+        }):
+            with pytest.raises(FileNotFoundError, match="Input store not found"):
+                estimate_stitch_from_tiles(
+                    input_store_path=tmp_path / "nonexistent.zarr",
+                    output_path=tmp_path / "config.yml",
+                    tile_size=(2048, 2048),
+                )
+
+    def test_calls_stitch_library(self, tmp_path):
+        """Test that function calls the stitch library correctly."""
+        from lib.preprocess.stitch import estimate_stitch_from_tiles
+
+        # Create a dummy input store
+        input_store = tmp_path / "input.zarr"
+        input_store.mkdir()
+
+        mock_estimate = MagicMock(return_value={"A/01/000000": [0, 0]})
+        mock_module = MagicMock()
+        mock_module.estimate_stitch = mock_estimate
+
+        with patch.dict(sys.modules, {
+            "stitch": MagicMock(),
+            "stitch.stitch": MagicMock(),
+            "stitch.stitch.assemble": mock_module,
+        }):
+            result = estimate_stitch_from_tiles(
+                input_store_path=input_store,
+                output_path=tmp_path / "config.yml",
+                tile_size=(2048, 2048),
+                overlap_pixels=150,
+                flipud=True,
+            )
+
+            mock_estimate.assert_called_once()
+            call_kwargs = mock_estimate.call_args[1]
+            assert call_kwargs["flipud"] is True
+            assert call_kwargs["overlap"] == 150

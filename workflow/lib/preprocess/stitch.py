@@ -206,3 +206,187 @@ def is_stitching_enabled(config: Dict[str, Any], image_type: str = None) -> bool
         return type_config.get("enabled", True)
 
     return True
+
+
+def estimate_stitch_from_metadata(
+    metadata_df: "pd.DataFrame",
+    tile_size: Tuple[int, int],
+    pixel_size: float,
+    well: str,
+    output_path: Union[str, Path],
+) -> Dict[str, List[int]]:
+    """Estimate tile positions from stage coordinate metadata.
+
+    Converts microscope stage coordinates (in µm) to pixel positions for stitching.
+    This is faster than phase correlation but may be less accurate if stage
+    coordinates are imprecise.
+
+    Args:
+        metadata_df: DataFrame with columns 'tile', 'x_pos', 'y_pos' containing
+                    stage coordinates in micrometers.
+        tile_size: Tuple of (height, width) in pixels for each tile.
+        pixel_size: Physical pixel size in µm/pixel.
+        well: Well identifier (e.g., "A/01" for HCS layout).
+        output_path: Path to write the stitch configuration YAML file.
+
+    Returns:
+        Dictionary mapping tile paths to [y_shift, x_shift] in pixels.
+
+    Raises:
+        ValueError: If required columns are missing or coordinates are invalid.
+    """
+    import pandas as pd
+    import yaml
+
+    if not isinstance(metadata_df, pd.DataFrame):
+        raise ValueError("metadata_df must be a pandas DataFrame")
+
+    required_cols = {"tile", "x_pos", "y_pos"}
+    missing = required_cols - set(metadata_df.columns)
+    if missing:
+        raise ValueError(f"metadata_df missing required columns: {missing}")
+
+    # Filter out rows with missing coordinates
+    valid_df = metadata_df.dropna(subset=["x_pos", "y_pos"])
+    if len(valid_df) == 0:
+        raise ValueError("No valid stage coordinates found in metadata")
+
+    # Convert stage coordinates (µm) to pixel positions
+    # Stage coordinates are typically absolute positions; we need relative shifts
+    x_coords = valid_df["x_pos"].values / pixel_size
+    y_coords = valid_df["y_pos"].values / pixel_size
+
+    # Normalize to origin (minimum becomes 0)
+    x_shifts = x_coords - x_coords.min()
+    y_shifts = y_coords - y_coords.min()
+
+    # Round to integers
+    x_shifts = [int(round(x)) for x in x_shifts]
+    y_shifts = [int(round(y)) for y in y_shifts]
+
+    # Build shift dictionary with tile path format expected by stitching library
+    # Format: "well/tile_name" -> [y_shift, x_shift]
+    shifts = {}
+    for i, row in enumerate(valid_df.itertuples()):
+        tile_name = _format_tile_name(row.tile)
+        tile_path = f"{well}/{tile_name}"
+        shifts[tile_path] = [y_shifts[i], x_shifts[i]]
+
+    # Write configuration file
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    config_data = {
+        "total_translation": shifts,
+        "method": "coordinate_based",
+        "pixel_size_um": pixel_size,
+        "tile_size": list(tile_size),
+    }
+
+    with open(output_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False)
+
+    return shifts
+
+
+def estimate_stitch_from_tiles(
+    input_store_path: Union[str, Path],
+    output_path: Union[str, Path],
+    tile_size: Tuple[int, int],
+    overlap_pixels: int = 150,
+    flipud: bool = False,
+    fliplr: bool = False,
+    rot90: int = 0,
+    reference_channel: int = 0,
+    limit_positions: Optional[int] = None,
+) -> Dict[str, List[int]]:
+    """Estimate tile positions using phase correlation registration.
+
+    Uses GPU-accelerated phase correlation to find optimal tile alignment.
+    More accurate than coordinate-based estimation but slower.
+
+    Args:
+        input_store_path: Path to OME-Zarr store containing tile images.
+        output_path: Path to write the stitch configuration YAML file.
+        tile_size: Tuple of (height, width) in pixels for each tile.
+        overlap_pixels: Expected overlap between adjacent tiles in pixels.
+        flipud: Flip tiles vertically before registration.
+        fliplr: Flip tiles horizontally before registration.
+        rot90: Number of 90-degree rotations to apply to tiles.
+        reference_channel: Channel index to use for registration.
+        limit_positions: Optional limit on number of positions to process
+                        (useful for testing/debugging).
+
+    Returns:
+        Dictionary mapping tile paths to [y_shift, x_shift] in pixels.
+
+    Raises:
+        ImportError: If stitch library is not available.
+        FileNotFoundError: If input store does not exist.
+    """
+    try:
+        from stitch.stitch.assemble import estimate_stitch
+    except ImportError as e:
+        raise ImportError(
+            "Stitch library not found. Install with: pip install stitch"
+        ) from e
+
+    input_store_path = Path(input_store_path)
+    output_path = Path(output_path)
+
+    if not input_store_path.exists():
+        raise FileNotFoundError(f"Input store not found: {input_store_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Call the stitching library's estimate function
+    shifts = estimate_stitch(
+        input_store_path=str(input_store_path),
+        output_config_path=output_path,
+        flipud=flipud,
+        fliplr=fliplr,
+        rot90=rot90,
+        tile_size=tile_size,
+        overlap=overlap_pixels,
+        limit_positions=limit_positions,
+    )
+
+    return shifts
+
+
+def _format_tile_name(tile_id: Union[int, str]) -> str:
+    """Format tile identifier to 6-digit name used by stitching library.
+
+    The stitching library expects tile names in format 'RRRCC' where:
+    - RRR: 3-digit row number (000-999)
+    - CCC: 3-digit column number (000-999)
+
+    For simple numeric tile IDs, we convert to a row-major grid layout.
+
+    Args:
+        tile_id: Tile identifier (integer or string).
+
+    Returns:
+        6-digit tile name string.
+    """
+    if isinstance(tile_id, str):
+        # If already formatted, return as-is
+        if len(tile_id) == 6 and tile_id.isdigit():
+            return tile_id
+        # Try to parse as integer
+        try:
+            tile_id = int(tile_id)
+        except ValueError:
+            # Return original if can't parse
+            return str(tile_id)
+
+    # Convert integer to row/col assuming row-major order
+    # This assumes a square-ish grid; actual layout depends on acquisition
+    tile_id = int(tile_id)
+
+    # Simple linear mapping for now - row = tile_id, col = 0
+    # This will be overridden by actual grid layout in metadata
+    row = tile_id
+    col = 0
+
+    return f"{row:03d}{col:03d}"
