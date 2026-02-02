@@ -428,3 +428,116 @@ class TestEstimateStitchFromTiles:
             call_kwargs = mock_estimate.call_args[1]
             assert call_kwargs["flipud"] is True
             assert call_kwargs["overlap"] == 150
+
+
+class TestStitchTilesToWell:
+    """Tests for stitch_tiles_to_well() function."""
+
+    def test_missing_input_store_raises(self, tmp_path):
+        """Test that missing input store raises FileNotFoundError."""
+        from lib.preprocess.stitch import stitch_tiles_to_well
+
+        # Create a config file
+        config_path = tmp_path / "config.yml"
+        config_path.write_text("total_translation: {}")
+
+        mock_stitch = MagicMock()
+        mock_module = MagicMock()
+        mock_module.stitch = mock_stitch
+
+        with patch.dict(sys.modules, {
+            "stitch": MagicMock(),
+            "stitch.stitch": MagicMock(),
+            "stitch.stitch.assemble": mock_module,
+        }):
+            with pytest.raises(FileNotFoundError, match="Input store not found"):
+                stitch_tiles_to_well(
+                    input_store_path=tmp_path / "nonexistent.zarr",
+                    stitch_config_path=config_path,
+                    output_store_path=tmp_path / "output.zarr",
+                )
+
+    def test_missing_config_raises(self, tmp_path):
+        """Test that missing config file raises FileNotFoundError."""
+        from lib.preprocess.stitch import stitch_tiles_to_well
+
+        # Create input store
+        input_store = tmp_path / "input.zarr"
+        input_store.mkdir()
+
+        mock_stitch = MagicMock()
+        mock_module = MagicMock()
+        mock_module.stitch = mock_stitch
+
+        with patch.dict(sys.modules, {
+            "stitch": MagicMock(),
+            "stitch.stitch": MagicMock(),
+            "stitch.stitch.assemble": mock_module,
+        }):
+            with pytest.raises(FileNotFoundError, match="Stitch config not found"):
+                stitch_tiles_to_well(
+                    input_store_path=input_store,
+                    stitch_config_path=tmp_path / "nonexistent.yml",
+                    output_store_path=tmp_path / "output.zarr",
+                )
+
+    def test_calls_stitch_library(self, tmp_path):
+        """Test that function calls the stitch library correctly."""
+        from lib.preprocess.stitch import stitch_tiles_to_well
+
+        # Create input store and config
+        input_store = tmp_path / "input.zarr"
+        input_store.mkdir()
+        config_path = tmp_path / "config.yml"
+        config_path.write_text("total_translation: {}")
+
+        mock_stitch = MagicMock()
+        mock_module = MagicMock()
+        mock_module.stitch = mock_stitch
+
+        with patch.dict(sys.modules, {
+            "stitch": MagicMock(),
+            "stitch.stitch": MagicMock(),
+            "stitch.stitch.assemble": mock_module,
+        }):
+            stitch_tiles_to_well(
+                input_store_path=input_store,
+                stitch_config_path=config_path,
+                output_store_path=tmp_path / "output.zarr",
+                flipud=True,
+                blending_method="average",
+            )
+
+            mock_stitch.assert_called_once()
+            call_kwargs = mock_stitch.call_args[1]
+            assert call_kwargs["flipud"] is True
+            assert call_kwargs["blending_method"] == "average"
+
+
+class TestLoadStitchConfig:
+    """Tests for load_stitch_config() function."""
+
+    def test_loads_valid_config(self, tmp_path):
+        """Test loading a valid config file."""
+        from lib.preprocess.stitch import load_stitch_config
+
+        config_path = tmp_path / "config.yml"
+        config_path.write_text("""
+total_translation:
+  A/01/000000: [0, 0]
+  A/01/001000: [0, 2000]
+method: phase_correlation
+""")
+
+        result = load_stitch_config(config_path)
+
+        assert "total_translation" in result
+        assert result["total_translation"]["A/01/000000"] == [0, 0]
+        assert result["method"] == "phase_correlation"
+
+    def test_missing_file_raises(self, tmp_path):
+        """Test that missing file raises FileNotFoundError."""
+        from lib.preprocess.stitch import load_stitch_config
+
+        with pytest.raises(FileNotFoundError, match="Stitch config not found"):
+            load_stitch_config(tmp_path / "nonexistent.yml")

@@ -390,3 +390,86 @@ def _format_tile_name(tile_id: Union[int, str]) -> str:
     col = 0
 
     return f"{row:03d}{col:03d}"
+
+
+def stitch_tiles_to_well(
+    input_store_path: Union[str, Path],
+    stitch_config_path: Union[str, Path],
+    output_store_path: Union[str, Path],
+    flipud: bool = False,
+    fliplr: bool = False,
+    rot90: int = 0,
+    blending_method: Literal["edt", "average"] = "edt",
+    channel_names: Optional[List[str]] = None,
+) -> None:
+    """Assemble tiles into a stitched well image using streaming.
+
+    Uses GPU-accelerated assembly with memory-efficient streaming to create
+    stitched OME-Zarr output without loading the full canvas into memory.
+
+    Args:
+        input_store_path: Path to OME-Zarr store containing tile images.
+        stitch_config_path: Path to YAML file with tile shift configuration.
+        output_store_path: Path for output OME-Zarr stitched image.
+        flipud: Flip tiles vertically before assembly.
+        fliplr: Flip tiles horizontally before assembly.
+        rot90: Number of 90-degree rotations to apply to tiles.
+        blending_method: Blending method - 'edt' (distance-weighted) or 'average'.
+        channel_names: Optional list of channel names for output metadata.
+
+    Raises:
+        ImportError: If stitch library is not available.
+        FileNotFoundError: If input store or config file not found.
+    """
+    try:
+        from stitch.stitch.assemble import stitch
+    except ImportError as e:
+        raise ImportError(
+            "Stitch library not found. Install with: pip install stitch"
+        ) from e
+
+    input_store_path = Path(input_store_path)
+    stitch_config_path = Path(stitch_config_path)
+    output_store_path = Path(output_store_path)
+
+    if not input_store_path.exists():
+        raise FileNotFoundError(f"Input store not found: {input_store_path}")
+
+    if not stitch_config_path.exists():
+        raise FileNotFoundError(f"Stitch config not found: {stitch_config_path}")
+
+    output_store_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Call the stitching library's stitch function
+    stitch(
+        config_path=str(stitch_config_path),
+        input_store_path=str(input_store_path),
+        output_store_path=str(output_store_path),
+        flipud=flipud,
+        fliplr=fliplr,
+        rot90=rot90,
+        blending_method=blending_method,
+    )
+
+
+def load_stitch_config(config_path: Union[str, Path]) -> Dict[str, Any]:
+    """Load stitch configuration from YAML file.
+
+    Args:
+        config_path: Path to stitch configuration YAML file.
+
+    Returns:
+        Dictionary with stitch configuration including 'total_translation' shifts.
+
+    Raises:
+        FileNotFoundError: If config file not found.
+    """
+    import yaml
+
+    config_path = Path(config_path)
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Stitch config not found: {config_path}")
+
+    with open(config_path) as f:
+        return yaml.safe_load(f)

@@ -121,3 +121,37 @@ Both methods output the same YAML config format for consumption by tile assembly
 All 30 tests pass. Phase correlation function wraps the external stitch library.
 
 ---
+
+## [2026-02-02] - Step 2.3 & 3.1-3.2: Add Snakemake Scripts and Assembly Function
+
+### Changes
+- File: `workflow/lib/preprocess/stitch.py`
+  - Added: `stitch_tiles_to_well()` - GPU-accelerated streaming tile assembly
+  - Added: `load_stitch_config()` - Load stitch configuration from YAML
+
+- File: `workflow/scripts/preprocess/estimate_stitch.py`
+  - Created: Snakemake script for tile position estimation
+  - Supports both coordinate_based and phase_correlation methods
+  - Extracts parameters from config and wildcards
+
+- File: `workflow/scripts/preprocess/stitch_tiles.py`
+  - Created: Snakemake script for tile assembly
+  - Uses streaming assembly with GPU acceleration when available
+  - Outputs OME-Zarr format
+
+- File: `tests/unit/preprocess/test_stitch.py`
+  - Added: 5 new tests for assembly and config loading functions
+
+### Rationale
+Scripts follow existing Brieflow pattern of accessing snakemake context object.
+Assembly uses streaming to avoid loading full canvas into memory, enabling
+stitching of large datasets that wouldn't fit in GPU/CPU memory.
+
+### Tests Added
+- `TestStitchTilesToWell` (3 tests): Missing store, missing config, library call
+- `TestLoadStitchConfig` (2 tests): Valid config, missing file
+
+### Issues/Notes
+All 35 tests pass.
+
+---
