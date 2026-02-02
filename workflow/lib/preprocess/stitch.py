@@ -121,11 +121,16 @@ def validate_stitch_config(config: Dict[str, Any]) -> Dict[str, Any]:
         use_gpu = False
     validated["use_gpu"] = use_gpu
 
-    # Overlap pixels (must be positive)
-    overlap = config.get("overlap_pixels", 150)
-    if not isinstance(overlap, int) or overlap <= 0:
-        raise ValueError(f"overlap_pixels must be a positive integer, got {overlap}")
-    validated["overlap_pixels"] = overlap
+    # Overlap pixels (positive int or "auto" for auto-detection)
+    overlap = config.get("overlap_pixels", "auto")
+    if overlap == "auto" or overlap is None:
+        validated["overlap_pixels"] = "auto"
+    elif isinstance(overlap, int) and overlap > 0:
+        validated["overlap_pixels"] = overlap
+    else:
+        raise ValueError(
+            f"overlap_pixels must be a positive integer or 'auto', got {overlap}"
+        )
 
     # Image augmentation parameters
     validated["flipud"] = bool(config.get("flipud", False))
@@ -206,6 +211,82 @@ def is_stitching_enabled(config: Dict[str, Any], image_type: str = None) -> bool
         return type_config.get("enabled", True)
 
     return True
+
+
+def detect_overlap_from_metadata(
+    metadata_df: "pd.DataFrame",
+    tile_size: Tuple[int, int],
+    pixel_size: float,
+) -> int:
+    """Auto-detect tile overlap from stage coordinate metadata.
+
+    Calculates the overlap by finding the minimum distance between adjacent
+    tiles and subtracting from tile size.
+
+    Args:
+        metadata_df: DataFrame with columns 'x_pos', 'y_pos' containing
+                    stage coordinates in micrometers.
+        tile_size: Tuple of (height, width) in pixels for each tile.
+        pixel_size: Physical pixel size in µm/pixel.
+
+    Returns:
+        Estimated overlap in pixels. Returns 150 as default if detection fails.
+    """
+    import numpy as np
+
+    DEFAULT_OVERLAP = 150
+
+    try:
+        # Get valid coordinates
+        valid_df = metadata_df.dropna(subset=["x_pos", "y_pos"])
+        if len(valid_df) < 2:
+            return DEFAULT_OVERLAP
+
+        x_coords = valid_df["x_pos"].values
+        y_coords = valid_df["y_pos"].values
+
+        # Find minimum non-zero distances between tiles
+        min_x_dist = float("inf")
+        min_y_dist = float("inf")
+
+        for i in range(len(x_coords)):
+            for j in range(i + 1, len(x_coords)):
+                dx = abs(x_coords[i] - x_coords[j])
+                dy = abs(y_coords[i] - y_coords[j])
+
+                # Only consider distances that suggest adjacent tiles
+                # (not diagonal or far apart)
+                if dx > 0 and dy < tile_size[0] * pixel_size * 0.5:
+                    min_x_dist = min(min_x_dist, dx)
+                if dy > 0 and dx < tile_size[1] * pixel_size * 0.5:
+                    min_y_dist = min(min_y_dist, dy)
+
+        # Convert to pixels and calculate overlap
+        tile_size_um = (tile_size[0] * pixel_size, tile_size[1] * pixel_size)
+
+        overlaps = []
+        if min_x_dist < float("inf"):
+            overlap_x = tile_size_um[1] - min_x_dist
+            if overlap_x > 0:
+                overlaps.append(int(round(overlap_x / pixel_size)))
+        if min_y_dist < float("inf"):
+            overlap_y = tile_size_um[0] - min_y_dist
+            if overlap_y > 0:
+                overlaps.append(int(round(overlap_y / pixel_size)))
+
+        if overlaps:
+            detected = int(np.mean(overlaps))
+            # Sanity check: overlap should be positive and less than tile size
+            if 0 < detected < min(tile_size):
+                print(f"[stitch] Auto-detected overlap: {detected} pixels")
+                return detected
+
+        print(f"[stitch] Could not detect overlap, using default: {DEFAULT_OVERLAP}")
+        return DEFAULT_OVERLAP
+
+    except Exception as e:
+        print(f"[stitch] Overlap detection failed ({e}), using default: {DEFAULT_OVERLAP}")
+        return DEFAULT_OVERLAP
 
 
 def estimate_stitch_from_metadata(

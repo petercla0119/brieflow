@@ -187,3 +187,29 @@ Stitching requires OME-Zarr output format to be enabled (zarr in output_formats)
 Rules will be skipped if stitch.enabled is false in config.
 
 ---
+
+## [2026-02-02] - Auto-Detect Overlap from Metadata
+
+### Changes
+- File: `workflow/lib/preprocess/stitch.py`
+  - Added: `detect_overlap_from_metadata()` - Auto-detect tile overlap from stage coordinates
+  - Modified: `validate_stitch_config()` - Default overlap_pixels to "auto" instead of 150
+
+- File: `tests/unit/preprocess/test_stitch.py`
+  - Added: `TestDetectOverlapFromMetadata` (2 tests) - Overlap detection tests
+  - Added: `test_overlap_auto_accepted()` - Test "auto" value accepted
+  - Updated: `test_enabled_config_applies_defaults()` - Default is now "auto"
+
+### Rationale
+Auto-detection eliminates the need to manually specify overlap_pixels. The overlap is
+calculated from stage coordinates: overlap = tile_size - distance_between_tiles.
+Default reference_channel is already 0 (first channel) for both phenotype and SBS.
+
+### Tests Added
+- `TestDetectOverlapFromMetadata` (2 tests): Horizontal overlap, single tile fallback
+- Updated config validation test for "auto" default
+
+### Issues/Notes
+All 38 tests pass. Auto-detection requires valid stage coordinates in metadata.
+
+---

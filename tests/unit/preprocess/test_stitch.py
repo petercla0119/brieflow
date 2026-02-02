@@ -104,7 +104,7 @@ class TestValidateStitchConfig:
 
         assert result["enabled"] is True
         assert result["method"] == "phase_correlation"
-        assert result["overlap_pixels"] == 150
+        assert result["overlap_pixels"] == "auto"  # Default to auto-detection
         assert result["flipud"] is False
         assert result["fliplr"] is False
         assert result["rot90"] == 0
@@ -157,6 +157,17 @@ class TestValidateStitchConfig:
 
         with pytest.raises(ValueError, match="overlap_pixels must be a positive"):
             validate_stitch_config({"enabled": True, "overlap_pixels": 0})
+
+    def test_overlap_auto_accepted(self):
+        """Test that 'auto' is accepted for overlap_pixels."""
+        from lib.preprocess.stitch import validate_stitch_config
+
+        result = validate_stitch_config({"enabled": True, "overlap_pixels": "auto"})
+        assert result["overlap_pixels"] == "auto"
+
+        # Also test None (should default to auto)
+        result = validate_stitch_config({"enabled": True})
+        assert result["overlap_pixels"] == "auto"
 
     def test_invalid_rot90_raises(self):
         """Test that invalid rot90 raises ValueError."""
@@ -287,6 +298,52 @@ class TestFormatTileName:
 
         assert _format_tile_name("5") == "005000"
         assert _format_tile_name("42") == "042000"
+
+
+class TestDetectOverlapFromMetadata:
+    """Tests for detect_overlap_from_metadata() function."""
+
+    def test_detects_horizontal_overlap(self):
+        """Test detection of horizontal tile overlap."""
+        import pandas as pd
+        from lib.preprocess.stitch import detect_overlap_from_metadata
+
+        # Tiles at 0 and 700 µm with 0.325 µm/pixel and 2400px tiles
+        # Tile size in µm = 2400 * 0.325 = 780 µm
+        # Overlap = 780 - 700 = 80 µm = 246 pixels
+        metadata = pd.DataFrame({
+            "tile": [0, 1],
+            "x_pos": [0.0, 700.0],
+            "y_pos": [0.0, 0.0],
+        })
+
+        overlap = detect_overlap_from_metadata(
+            metadata_df=metadata,
+            tile_size=(2400, 2400),
+            pixel_size=0.325,
+        )
+
+        # Should detect ~246 pixels overlap
+        assert 200 < overlap < 300
+
+    def test_returns_default_for_single_tile(self):
+        """Test returns default for single tile."""
+        import pandas as pd
+        from lib.preprocess.stitch import detect_overlap_from_metadata
+
+        metadata = pd.DataFrame({
+            "tile": [0],
+            "x_pos": [0.0],
+            "y_pos": [0.0],
+        })
+
+        overlap = detect_overlap_from_metadata(
+            metadata_df=metadata,
+            tile_size=(2400, 2400),
+            pixel_size=0.325,
+        )
+
+        assert overlap == 150  # Default
 
 
 class TestEstimateStitchFromMetadata:
