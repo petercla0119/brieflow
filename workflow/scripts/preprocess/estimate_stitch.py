@@ -7,7 +7,7 @@ This Snakemake script estimates tile positions using either:
 The output is a YAML configuration file with tile shifts that can be
 used by the stitch_tiles.py script.
 """
-
+# TODO: test run for all rounds in /Users/cspeters/projects/ops/data/new_imgs_copy/phenotype/real_images. Then look further into the illumination mismatch on the right hand side of the stiched images
 from pathlib import Path
 import pandas as pd
 

@@ -188,6 +188,49 @@ Stitching requires OME-Zarr output format to be enabled (zarr in output_formats)
 Rules will be skipped if stitch.enabled is false in config.
 
 ---
+Summary of Implementation                                                                                                                    
+                                                                                                                                              
+Branch: feat/preprocess/stitching                                                                                                            
+                                                                                                                                              
+Commits (6 total):                                                                                                                           
+1. docs: add stitching integration changelog                                                                                                 
+2. build: add stitch package dependency                                                                                                      
+3. feat(preprocess): add stitch config validation and GPU detection                                                                          
+4. feat(preprocess): add stitch estimation functions                                                                                         
+5. feat(preprocess): add stitch scripts and assembly function                                                                                
+6. feat(preprocess): add stitch targets and rules                                                                                            
+                                                                                                                                              
+Files Created:                                                                                                                               
+- docs/CHANGELOG_STITCHING.md - Detailed integration log                                                                                     
+- workflow/lib/preprocess/stitch.py - Adapter module (393 lines)                                                                             
+- workflow/scripts/preprocess/estimate_stitch.py - Position estimation script                                                                
+- workflow/scripts/preprocess/stitch_tiles.py - Tile assembly script                                                                         
+- tests/unit/preprocess/__init__.py - Test package                                                                                           
+- tests/unit/preprocess/test_stitch.py - 35 unit tests                                                                                       
+                                                                                                                                              
+Files Modified:                                                                                                                              
+- pyproject.toml - Added stitch and iohub dependencies                                                                                       
+- workflow/targets/preprocess.smk - Added stitch outputs and mappings                                                                        
+- workflow/rules/preprocess.smk - Added 4 conditional stitch rules                                                                           
+                                                                                                                                              
+Configuration Schema (to enable stitching, add to config YAML):                                                                              
+preprocess:                                                                                                                                  
+  stitch:                                                                                                                                    
+    enabled: true                                                                                                                            
+    method: "phase_correlation"  # or "coordinate_based"                                                                                     
+    use_gpu: true                                                                                                                            
+    overlap_pixels: 150                                                                                                                      
+    flipud: false                                                                                                                            
+    fliplr: false                                                                                                                            
+    rot90: 0                                                                                                                                 
+    blending_method: "edt"                                                                                                                   
+    phenotype:                                                                                                                               
+      enabled: true                                                                                                                          
+      reference_channel: 0                                                                                                                   
+    sbs:                                                                                                                                     
+      enabled: true                                                                                                                          
+      reference_cycle: 1                                                                                                                     
+      reference_channel: 0  
 
 ## [2026-02-02] - Auto-Detect Overlap from Metadata
 
