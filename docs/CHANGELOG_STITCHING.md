@@ -213,3 +213,38 @@ Default reference_channel is already 0 (first channel) for both phenotype and SB
 All 38 tests pass. Auto-detection requires valid stage coordinates in metadata.
 
 ---
+
+## [2026-02-02] - Run Stitching After Illumination Correction
+
+### Changes
+- File: `workflow/rules/preprocess.smk`
+  - Modified: `estimate_stitch_phenotype` - Added `ic_field` input dependency
+  - Modified: `estimate_stitch_sbs` - Added `ic_field` input dependency
+  - Modified: `stitch_phenotype` - Added `ic_field` input, renamed `config` to `stitch_config`
+  - Modified: `stitch_sbs` - Added `ic_field` input, renamed `config` to `stitch_config`
+
+- File: `workflow/scripts/preprocess/stitch_tiles.py`
+  - Modified: Use `snakemake.input.stitch_config` instead of `snakemake.input.config`
+
+### Rationale
+Stitching should run after illumination correction to ensure the complete
+preprocessing pipeline is finished before generating stitched images. The IC
+field is added as an explicit dependency to all stitch rules, creating the
+following pipeline order:
+
+1. Extract metadata
+2. Combine metadata
+3. Convert images (TIFF/Zarr/OME-Zarr)
+4. Calculate illumination correction
+5. **Estimate stitch positions** (now depends on IC)
+6. **Assemble stitched images** (now depends on IC)
+
+### Tests Added
+None (Snakemake dependency change)
+
+### Issues/Notes
+The stitched images themselves are not IC-corrected (they use raw tiles).
+This change ensures stitching runs after IC for pipeline ordering purposes.
+Future enhancement: optionally apply IC before stitching.
+
+---
