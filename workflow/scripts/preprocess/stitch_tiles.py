@@ -32,7 +32,7 @@ print(f"Compute backend: {get_compute_backend()}")
 
 # Get input paths
 input_store = snakemake.input.tiles
-stitch_config_path = snakemake.input.config
+stitch_config_path = snakemake.input.stitch_config
 output_path = snakemake.output[0]
 
 print(f"Input OME-Zarr store: {input_store}")

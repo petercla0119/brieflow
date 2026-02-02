@@ -252,6 +252,7 @@ if "estimate_stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
 
 if "stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
     # Assemble stitched phenotype well images
+    # Runs after IC calculation (via estimate_stitch dependency)
     rule stitch_phenotype:
         input:
             tiles=lambda wildcards: output_to_input(
@@ -260,7 +261,8 @@ if "stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
                 expansion_values=["tile"],
                 metadata_combos=phenotype_wildcard_combos,
             ),
-            config=PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_phenotype"],
+            stitch_config=PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_phenotype"],
+            ic_field=PREPROCESS_OUTPUTS_MAPPED["calculate_ic_phenotype"],
         output:
             PREPROCESS_OUTPUTS_MAPPED["stitch_phenotype"],
         params:
@@ -295,6 +297,7 @@ if "estimate_stitch_sbs" in PREPROCESS_OUTPUTS_MAPPED:
 
 if "stitch_sbs" in PREPROCESS_OUTPUTS_MAPPED:
     # Assemble stitched SBS well images
+    # Runs after IC calculation (via estimate_stitch dependency)
     rule stitch_sbs:
         input:
             tiles=lambda wildcards: output_to_input(
@@ -303,7 +306,8 @@ if "stitch_sbs" in PREPROCESS_OUTPUTS_MAPPED:
                 expansion_values=["tile"],
                 metadata_combos=sbs_wildcard_combos,
             ),
-            config=PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_sbs"],
+            stitch_config=PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_sbs"],
+            ic_field=PREPROCESS_OUTPUTS_MAPPED["calculate_ic_sbs"],
         output:
             PREPROCESS_OUTPUTS_MAPPED["stitch_sbs"],
         params:
