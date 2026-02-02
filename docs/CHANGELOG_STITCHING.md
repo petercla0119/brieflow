@@ -155,3 +155,35 @@ stitching of large datasets that wouldn't fit in GPU/CPU memory.
 All 35 tests pass.
 
 ---
+
+## [2026-02-02] - Step 2.4-2.6 & 3.3-3.5: Add Snakemake Targets and Rules
+
+### Changes
+- File: `workflow/targets/preprocess.smk`
+  - Added: Stitch enablement checks using `is_stitching_enabled()`
+  - Added: Output definitions for estimate_stitch and stitch rules
+  - Added: Output mappings (YAML files as regular, Zarr as directory)
+  - Added: Conditional filtering based on stitch config enablement
+
+- File: `workflow/rules/preprocess.smk`
+  - Added: `estimate_stitch_phenotype` rule - Position estimation for phenotype
+  - Added: `stitch_phenotype` rule - Tile assembly for phenotype (GPU resource)
+  - Added: `estimate_stitch_sbs` rule - Position estimation for SBS
+  - Added: `stitch_sbs` rule - Tile assembly for SBS (GPU resource)
+  - All rules are conditional on config enablement
+
+### Rationale
+Rules follow existing Brieflow pattern:
+- Input functions use `output_to_input()` to expand tile wildcards
+- Stitching takes OME-Zarr tiles (from convert_*_omezarr rules) as input
+- GPU resources declared for assembly rules to enable cluster scheduling
+- Stitch rules are after tile conversion, before downstream analysis
+
+### Tests Added
+None (Snakemake rules - tested via dry-run)
+
+### Issues/Notes
+Stitching requires OME-Zarr output format to be enabled (zarr in output_formats).
+Rules will be skipped if stitch.enabled is false in config.
+
+---

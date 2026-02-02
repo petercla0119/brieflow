@@ -225,6 +225,91 @@ rule calculate_ic_phenotype:
         "../scripts/preprocess/calculate_ic_field.py"
 
 
+# Stitching rules (conditional on config)
+# These rules assemble tiles into stitched well images for visualization/QC
+
+if "estimate_stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
+    # Estimate tile positions for phenotype images
+    rule estimate_stitch_phenotype:
+        input:
+            tiles=lambda wildcards: output_to_input(
+                PREPROCESS_OUTPUTS["convert_phenotype_omezarr"],
+                wildcards=wildcards,
+                expansion_values=["tile"],
+                metadata_combos=phenotype_wildcard_combos,
+            ),
+            metadata=PREPROCESS_OUTPUTS_MAPPED["combine_metadata_phenotype"],
+        output:
+            PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_phenotype"],
+        params:
+            tile_size=config.get("preprocess", {}).get("stitch", {}).get("tile_size", (2048, 2048)),
+            pixel_size=config.get("preprocess", {}).get("stitch", {}).get("pixel_size", None),
+        script:
+            "../scripts/preprocess/estimate_stitch.py"
+
+
+if "stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
+    # Assemble stitched phenotype well images
+    rule stitch_phenotype:
+        input:
+            tiles=lambda wildcards: output_to_input(
+                PREPROCESS_OUTPUTS["convert_phenotype_omezarr"],
+                wildcards=wildcards,
+                expansion_values=["tile"],
+                metadata_combos=phenotype_wildcard_combos,
+            ),
+            config=PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_phenotype"],
+        output:
+            PREPROCESS_OUTPUTS_MAPPED["stitch_phenotype"],
+        params:
+            channel_names=config.get("preprocess", {}).get("phenotype_channel_order", None),
+        resources:
+            gpu=1,  # Request GPU for accelerated stitching
+        script:
+            "../scripts/preprocess/stitch_tiles.py"
+
+
+if "estimate_stitch_sbs" in PREPROCESS_OUTPUTS_MAPPED:
+    # Estimate tile positions for SBS images
+    rule estimate_stitch_sbs:
+        input:
+            tiles=lambda wildcards: output_to_input(
+                PREPROCESS_OUTPUTS["convert_sbs_omezarr"],
+                wildcards=wildcards,
+                expansion_values=["tile"],
+                metadata_combos=sbs_wildcard_combos,
+            ),
+            metadata=PREPROCESS_OUTPUTS_MAPPED["combine_metadata_sbs"],
+        output:
+            PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_sbs"],
+        params:
+            tile_size=config.get("preprocess", {}).get("stitch", {}).get("tile_size", (2048, 2048)),
+            pixel_size=config.get("preprocess", {}).get("stitch", {}).get("pixel_size", None),
+        script:
+            "../scripts/preprocess/estimate_stitch.py"
+
+
+if "stitch_sbs" in PREPROCESS_OUTPUTS_MAPPED:
+    # Assemble stitched SBS well images
+    rule stitch_sbs:
+        input:
+            tiles=lambda wildcards: output_to_input(
+                PREPROCESS_OUTPUTS["convert_sbs_omezarr"],
+                wildcards=wildcards,
+                expansion_values=["tile"],
+                metadata_combos=sbs_wildcard_combos,
+            ),
+            config=PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_sbs"],
+        output:
+            PREPROCESS_OUTPUTS_MAPPED["stitch_sbs"],
+        params:
+            channel_names=config.get("preprocess", {}).get("sbs_channel_order", None),
+        resources:
+            gpu=1,  # Request GPU for accelerated stitching
+        script:
+            "../scripts/preprocess/stitch_tiles.py"
+
+
 # rule for all preprocessing steps
 rule all_preprocess:
     input:

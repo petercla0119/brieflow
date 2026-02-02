@@ -2,8 +2,14 @@ from lib.shared.file_utils import get_filename
 from snakemake.io import temp, directory
 from lib.shared.target_utils import map_outputs, outputs_to_targets
 from lib.preprocess.file_utils import get_output_pattern
+from lib.preprocess.stitch import is_stitching_enabled
 
 PREPROCESS_FP = ROOT_FP / "preprocess"
+
+# Check if stitching is enabled
+ENABLE_STITCH = is_stitching_enabled(config)
+ENABLE_STITCH_PHENOTYPE = is_stitching_enabled(config, "phenotype")
+ENABLE_STITCH_SBS = is_stitching_enabled(config, "sbs")
 
 # Determine output format from config
 # output_formats controls what file formats are created during preprocessing:
@@ -101,6 +107,31 @@ PREPROCESS_OUTPUTS = {
             "ic_field", IC_EXT
         ),
     ],
+    # Stitching outputs (conditional on config)
+    "estimate_stitch_phenotype": [
+        PREPROCESS_FP / "stitch_configs" / "phenotype" / get_filename(
+            {"plate": "{plate}", "well": "{well}"},
+            "stitch_config", "yml"
+        ),
+    ],
+    "stitch_phenotype": [
+        PREPROCESS_FP / "stitched" / "phenotype" / get_filename(
+            {"plate": "{plate}", "well": "{well}"},
+            "stitched", "zarr"
+        ),
+    ],
+    "estimate_stitch_sbs": [
+        PREPROCESS_FP / "stitch_configs" / "sbs" / get_filename(
+            {"plate": "{plate}", "well": "{well}", "cycle": "{cycle}"},
+            "stitch_config", "yml"
+        ),
+    ],
+    "stitch_sbs": [
+        PREPROCESS_FP / "stitched" / "sbs" / get_filename(
+            {"plate": "{plate}", "well": "{well}", "cycle": "{cycle}"},
+            "stitched", "zarr"
+        ),
+    ],
 }
 
 # Determine which Zarr outputs to create
@@ -122,6 +153,11 @@ PREPROCESS_OUTPUT_MAPPINGS = {
     "convert_phenotype_omezarr": directory,
     "calculate_ic_sbs": directory if IC_EXT == "zarr" else None,
     "calculate_ic_phenotype": directory if IC_EXT == "zarr" else None,
+    # Stitching output mappings
+    "estimate_stitch_phenotype": None,
+    "estimate_stitch_sbs": None,
+    "stitch_phenotype": directory,
+    "stitch_sbs": directory,
 }
 
 # Filter outputs based on config
@@ -142,6 +178,19 @@ if not ENABLE_OMEZARR:
         del PREPROCESS_OUTPUTS["convert_sbs_omezarr"]
     if "convert_phenotype_omezarr" in PREPROCESS_OUTPUTS:
         del PREPROCESS_OUTPUTS["convert_phenotype_omezarr"]
+
+# Filter stitching outputs based on config
+if not ENABLE_STITCH_PHENOTYPE:
+    if "estimate_stitch_phenotype" in PREPROCESS_OUTPUTS:
+        del PREPROCESS_OUTPUTS["estimate_stitch_phenotype"]
+    if "stitch_phenotype" in PREPROCESS_OUTPUTS:
+        del PREPROCESS_OUTPUTS["stitch_phenotype"]
+
+if not ENABLE_STITCH_SBS:
+    if "estimate_stitch_sbs" in PREPROCESS_OUTPUTS:
+        del PREPROCESS_OUTPUTS["estimate_stitch_sbs"]
+    if "stitch_sbs" in PREPROCESS_OUTPUTS:
+        del PREPROCESS_OUTPUTS["stitch_sbs"]
 
 # Convert all Paths to strings
 for key in PREPROCESS_OUTPUTS:
