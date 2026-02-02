@@ -230,6 +230,7 @@ rule calculate_ic_phenotype:
 
 if "estimate_stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
     # Estimate tile positions for phenotype images
+    # Runs after IC calculation to ensure preprocessing is complete
     rule estimate_stitch_phenotype:
         input:
             tiles=lambda wildcards: output_to_input(
@@ -239,6 +240,7 @@ if "estimate_stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
                 metadata_combos=phenotype_wildcard_combos,
             ),
             metadata=PREPROCESS_OUTPUTS_MAPPED["combine_metadata_phenotype"],
+            ic_field=PREPROCESS_OUTPUTS_MAPPED["calculate_ic_phenotype"],
         output:
             PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_phenotype"],
         params:
@@ -271,6 +273,7 @@ if "stitch_phenotype" in PREPROCESS_OUTPUTS_MAPPED:
 
 if "estimate_stitch_sbs" in PREPROCESS_OUTPUTS_MAPPED:
     # Estimate tile positions for SBS images
+    # Runs after IC calculation to ensure preprocessing is complete
     rule estimate_stitch_sbs:
         input:
             tiles=lambda wildcards: output_to_input(
@@ -280,6 +283,7 @@ if "estimate_stitch_sbs" in PREPROCESS_OUTPUTS_MAPPED:
                 metadata_combos=sbs_wildcard_combos,
             ),
             metadata=PREPROCESS_OUTPUTS_MAPPED["combine_metadata_sbs"],
+            ic_field=PREPROCESS_OUTPUTS_MAPPED["calculate_ic_sbs"],
         output:
             PREPROCESS_OUTPUTS_MAPPED["estimate_stitch_sbs"],
         params:
