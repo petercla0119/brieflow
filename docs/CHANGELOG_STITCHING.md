@@ -32,3 +32,22 @@ None (documentation only)
 None
 
 ---
+
+## [2026-02-02] - Step 1.2: Add Stitch Package Dependency
+
+### Changes
+- File: `pyproject.toml`
+  - Added: `iohub>=0.2.0` - Required by stitching library for OME-Zarr I/O
+  - Added: `stitch @ file:///Users/cspeters/projects/ops/stitching` - Local stitching library
+
+### Rationale
+Using local file reference for development allows rapid iteration on stitching library
+while maintaining proper dependency management.
+
+### Tests Added
+None (dependency addition)
+
+### Issues/Notes
+None
+
+---

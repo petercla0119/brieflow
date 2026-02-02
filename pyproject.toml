@@ -52,6 +52,8 @@ dependencies = [
   "zarr>=2.16.0",
   "dask[array]",
   "fsspec",
+  "iohub>=0.2.0",
+  "stitch @ file:///Users/cspeters/projects/ops/stitching",
 ]
 
 
