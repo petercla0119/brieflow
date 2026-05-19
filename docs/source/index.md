@@ -35,6 +35,7 @@ Brieflow is a community-driven project, and we welcome contributions from anyone
 2.installation_analysis_setup.md
 3.running_modules.md
 zarr_support.md
+stitching.md
 4.development.md
 example_analyses.md
 config_glossary.md
