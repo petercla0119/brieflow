@@ -54,7 +54,8 @@ def phate_leiden_pipeline(
     )
 
     # Get weights from PHATE
-    weights = np.asarray(p.graph.diff_op.todense())
+    diff_op = p.diff_op
+    weights = np.asarray(diff_op.todense() if hasattr(diff_op, "todense") else diff_op)
 
     # Run Leiden clustering
     clusters = run_leiden_clustering(weights, resolution=resolution)
@@ -120,6 +121,46 @@ def run_phate(
     )
 
     return df_phate, p
+
+
+def run_shuffled_baseline(
+    aggregated_data,
+    resolution,
+    phate_distance_metric,
+    subsample_fraction=0.5,
+    random_state=42,
+    first_feature_name="PC_0",
+):
+    """Run PHATE+Leiden on column-shuffled data as a null distribution baseline.
+
+    Args:
+        aggregated_data (pd.DataFrame): Input data with metadata and feature columns.
+        resolution (float): Resolution parameter for Leiden clustering.
+        phate_distance_metric (str): Distance metric for PHATE.
+        subsample_fraction (float, optional): Fraction of rows to use (0.0-1.0).
+            Defaults to 0.5. Lower values give faster runtime at the cost of
+            statistical precision (acceptable for a null baseline).
+        random_state (int, optional): Random seed. Defaults to 42.
+        first_feature_name (str, optional): Name of first feature column. Defaults to "PC_0".
+
+    Returns:
+        pd.DataFrame: Clustering result on shuffled (and optionally subsampled) data.
+    """
+    data = aggregated_data.copy()
+    rng = np.random.RandomState(random_state)
+
+    if subsample_fraction < 1.0:
+        n = max(1, int(len(data) * subsample_fraction))
+        data = data.sample(n=n, random_state=random_state).reset_index(drop=True)
+
+    feature_start_idx = data.columns.tolist().index(first_feature_name)
+    feature_cols = data.columns[feature_start_idx:]
+    for col in feature_cols:
+        data[col] = rng.permutation(data[col].values)
+
+    return phate_leiden_pipeline(
+        data, resolution, phate_distance_metric, first_feature_name=first_feature_name
+    )
 
 
 def run_leiden_clustering(weights, resolution=1.0, seed=42):
