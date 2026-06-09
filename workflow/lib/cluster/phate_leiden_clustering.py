@@ -21,6 +21,7 @@ def phate_leiden_pipeline(
     phate_distance_metric,
     first_feature_name="PC_0",
     return_potential=False,
+    **phate_kwargs,
 ):
     """Run complete PHATE dimensionality reduction and Leiden clustering pipeline.
 
@@ -30,6 +31,7 @@ def phate_leiden_pipeline(
         phate_distance_metric (str): Distance metric for PHATE algorithm (e.g., 'euclidean', 'cosine').
         first_feature_name (str, optional): Name of first feature column. Defaults to "PC_0".
         return_potential (bool, optional): Whether to return the reshaped potential array. Defaults to False.
+        **phate_kwargs: Additional keyword arguments passed to ``run_phate`` (e.g. ``use_approx_nn``).
 
     Returns:
         pd.DataFrame or tuple: DataFrame with original metadata, PHATE coordinates and cluster assignments.
@@ -45,7 +47,9 @@ def phate_leiden_pipeline(
     metadata_cols = all_cols[:feature_start_idx]
 
     # Run PHATE
-    df_phate, p = run_phate(feature_selected_data, metric=phate_distance_metric)
+    df_phate, p = run_phate(
+        feature_selected_data, metric=phate_distance_metric, **phate_kwargs
+    )
 
     # Create a DataFrame from the potential matrix
     potential = p.diff_potential
@@ -54,7 +58,8 @@ def phate_leiden_pipeline(
     )
 
     # Get weights from PHATE
-    weights = np.asarray(p.graph.diff_op.todense())
+    diff_op = p.diff_op
+    weights = np.asarray(diff_op.todense() if hasattr(diff_op, "todense") else diff_op)
 
     # Run Leiden clustering
     clusters = run_leiden_clustering(weights, resolution=resolution)
@@ -83,6 +88,7 @@ def run_phate(
     random_state=42,
     knn=10,
     metric="euclidean",
+    use_approx_nn=False,
     **kwargs,
 ):
     """Run PHATE dimensionality reduction.
@@ -95,6 +101,9 @@ def run_phate(
         random_state (int, optional): Random seed for reproducibility. Defaults to 42.
         knn (int, optional): Number of nearest neighbors to use. Defaults to 10.
         metric (str, optional): Distance metric for KNN calculations. Defaults to 'euclidean'.
+        use_approx_nn (bool, optional): Use PyNNDescent for approximate nearest neighbors
+            instead of exact kNN. Requires ``pip install brieflow[performance]``.
+            Defaults to False.
         **kwargs: Additional parameters to pass to the PHATE constructor.
 
     Returns:
@@ -102,7 +111,8 @@ def run_phate(
             pd.DataFrame: DataFrame with PHATE coordinates.
             phate.PHATE: Fitted PHATE object with graph and other attributes.
     """
-    # Initialize and run PHATE
+    data = feature_selected_data.values
+
     p = phate.PHATE(
         random_state=random_state,
         n_jobs=-1,
@@ -111,15 +121,73 @@ def run_phate(
         verbose=False,
     )
 
-    # Transform data
-    X_phate = p.fit_transform(feature_selected_data.values)
+    if use_approx_nn:
+        X_phate = _fit_transform_with_approx_nn(p, data)
+    else:
+        X_phate = p.fit_transform(data)
 
-    # Create output DataFrame
     df_phate = pd.DataFrame(
         X_phate, index=feature_selected_data.index, columns=["PHATE_0", "PHATE_1"]
     )
 
     return df_phate, p
+
+
+def _fit_transform_with_approx_nn(phate_op, data):
+    """Run PHATE fit_transform using PyNNDescent for the nearest neighbor step.
+
+    Temporarily replaces graphtools' sklearn NearestNeighbors with a
+    PyNNDescent-backed wrapper so the entire PHATE/graphtools pipeline
+    (kNNGraph, alpha-decay kernel, diffusion operator) stays identical —
+    only the NN backend changes.
+
+    Args:
+        phate_op (phate.PHATE): Configured but unfitted PHATE operator.
+        data (np.ndarray): Input data matrix.
+
+    Returns:
+        np.ndarray: PHATE embedding coordinates.
+    """
+    import graphtools.graphs as gt_graphs
+
+    original_nn = gt_graphs.NearestNeighbors
+    gt_graphs.NearestNeighbors = _make_approx_nn_class()
+    try:
+        result = phate_op.fit_transform(data)
+    finally:
+        gt_graphs.NearestNeighbors = original_nn
+    return result
+
+
+def _make_approx_nn_class():
+    """Build a sklearn-NearestNeighbors-compatible class backed by PyNNDescent."""
+    from pynndescent import NNDescent
+
+    class _ApproxNearestNeighbors:
+        def __init__(self, n_neighbors, algorithm="auto", metric="euclidean", n_jobs=1):
+            self.n_neighbors = n_neighbors
+            self.metric = metric
+            self.n_jobs = n_jobs
+            self._index = None
+
+        def fit(self, X):
+            self._index = NNDescent(
+                X,
+                metric=self.metric,
+                n_neighbors=self.n_neighbors,
+                n_jobs=self.n_jobs if self.n_jobs > 0 else None,
+            )
+            return self
+
+        def kneighbors(self, X=None, n_neighbors=None):
+            n = n_neighbors or self.n_neighbors
+            if X is None:
+                indices, distances = self._index.neighbor_graph
+            else:
+                indices, distances = self._index.query(X, k=n)
+            return distances[:, :n], indices[:, :n]
+
+    return _ApproxNearestNeighbors
 
 
 def run_leiden_clustering(weights, resolution=1.0, seed=42):
