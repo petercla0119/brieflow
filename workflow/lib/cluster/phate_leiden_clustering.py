@@ -21,6 +21,7 @@ def phate_leiden_pipeline(
     phate_distance_metric,
     first_feature_name="PC_0",
     return_potential=False,
+    inherit_params_from=None,
     **phate_kwargs,
 ):
     """Run complete PHATE dimensionality reduction and Leiden clustering pipeline.
@@ -31,6 +32,9 @@ def phate_leiden_pipeline(
         phate_distance_metric (str): Distance metric for PHATE algorithm (e.g., 'euclidean', 'cosine').
         first_feature_name (str, optional): Name of first feature column. Defaults to "PC_0".
         return_potential (bool, optional): Whether to return the reshaped potential array. Defaults to False.
+        inherit_params_from (phate.PHATE, optional): A fitted PHATE object whose auto-selected
+            ``t`` value will be reused, skipping the Von Neumann Entropy computation.
+            Defaults to None.
         **phate_kwargs: Additional keyword arguments passed to ``run_phate`` (e.g. ``use_approx_nn``).
 
     Returns:
@@ -48,7 +52,10 @@ def phate_leiden_pipeline(
 
     # Run PHATE
     df_phate, p = run_phate(
-        feature_selected_data, metric=phate_distance_metric, **phate_kwargs
+        feature_selected_data,
+        metric=phate_distance_metric,
+        inherit_params_from=inherit_params_from,
+        **phate_kwargs,
     )
 
     # Create a DataFrame from the potential matrix
@@ -83,12 +90,64 @@ def phate_leiden_pipeline(
         return result_df
 
 
+def phate_leiden_sweep(
+    aggregated_data,
+    resolutions,
+    phate_distance_metric,
+    first_feature_name="PC_0",
+    **phate_kwargs,
+):
+    """Run PHATE once and cluster at multiple Leiden resolutions.
+
+    Avoids rebuilding the PHATE graph for every resolution, giving a
+    speedup proportional to the number of resolutions tested.
+
+    Args:
+        aggregated_data (pd.DataFrame): Input data with metadata and feature columns.
+        resolutions (list[float]): Leiden resolution parameters to sweep.
+        phate_distance_metric (str): Distance metric for PHATE.
+        first_feature_name (str, optional): Name of first feature column. Defaults to "PC_0".
+        **phate_kwargs: Additional keyword arguments passed to ``run_phate``.
+
+    Returns:
+        dict[float, pd.DataFrame]: Mapping from resolution to clustering result DataFrame.
+    """
+    all_cols = aggregated_data.columns.tolist()
+    feature_start_idx = all_cols.index(first_feature_name)
+    feature_cols = all_cols[feature_start_idx:]
+    metadata_cols = all_cols[:feature_start_idx]
+
+    df_phate, p = run_phate(
+        aggregated_data[feature_cols],
+        metric=phate_distance_metric,
+        **phate_kwargs,
+    )
+
+    diff_op = p.diff_op
+    weights = np.asarray(diff_op.todense() if hasattr(diff_op, "todense") else diff_op)
+
+    results = {}
+    for resolution in resolutions:
+        clusters = run_leiden_clustering(weights, resolution=resolution)
+        result_df = df_phate.copy()
+        result_df["cluster"] = clusters
+        result_df = pd.concat(
+            [aggregated_data[metadata_cols].reset_index(drop=True), result_df],
+            axis=1,
+        )
+        result_df = result_df.sort_values(by=["cluster"])
+        results[resolution] = result_df
+
+    return results
+
+
 def run_phate(
     feature_selected_data,
     random_state=42,
     knn=10,
     metric="euclidean",
     use_approx_nn=False,
+    inherit_params_from=None,
     **kwargs,
 ):
     """Run PHATE dimensionality reduction.
@@ -104,6 +163,9 @@ def run_phate(
         use_approx_nn (bool, optional): Use PyNNDescent for approximate nearest neighbors
             instead of exact kNN. Requires ``pip install brieflow[performance]``.
             Defaults to False.
+        inherit_params_from (phate.PHATE, optional): A fitted PHATE object whose
+            auto-selected ``t`` is reused, skipping the Von Neumann Entropy search.
+            Defaults to None.
         **kwargs: Additional parameters to pass to the PHATE constructor.
 
     Returns:
@@ -113,11 +175,16 @@ def run_phate(
     """
     data = feature_selected_data.values
 
+    t = "auto"
+    if inherit_params_from is not None and inherit_params_from.optimal_t is not None:
+        t = inherit_params_from.optimal_t
+
     p = phate.PHATE(
         random_state=random_state,
         n_jobs=-1,
         knn=knn,
         knn_dist=metric,
+        t=t,
         verbose=False,
     )
 
@@ -131,6 +198,7 @@ def run_phate(
     )
 
     return df_phate, p
+
 
 
 def _fit_transform_with_approx_nn(phate_op, data):
@@ -188,6 +256,46 @@ def _make_approx_nn_class():
             return distances[:, :n], indices[:, :n]
 
     return _ApproxNearestNeighbors
+
+
+def run_shuffled_baseline(
+    aggregated_data,
+    resolution,
+    phate_distance_metric,
+    subsample_fraction=0.5,
+    random_state=42,
+    first_feature_name="PC_0",
+):
+    """Run PHATE+Leiden on column-shuffled data as a null distribution baseline.
+
+    Args:
+        aggregated_data (pd.DataFrame): Input data with metadata and feature columns.
+        resolution (float): Resolution parameter for Leiden clustering.
+        phate_distance_metric (str): Distance metric for PHATE.
+        subsample_fraction (float, optional): Fraction of rows to use (0.0-1.0).
+            Defaults to 0.5. Lower values give faster runtime at the cost of
+            statistical precision (acceptable for a null baseline).
+        random_state (int, optional): Random seed. Defaults to 42.
+        first_feature_name (str, optional): Name of first feature column. Defaults to "PC_0".
+
+    Returns:
+        pd.DataFrame: Clustering result on shuffled (and optionally subsampled) data.
+    """
+    data = aggregated_data.copy()
+    rng = np.random.RandomState(random_state)
+
+    if subsample_fraction < 1.0:
+        n = max(1, int(len(data) * subsample_fraction))
+        data = data.sample(n=n, random_state=random_state).reset_index(drop=True)
+
+    feature_start_idx = data.columns.tolist().index(first_feature_name)
+    feature_cols = data.columns[feature_start_idx:]
+    for col in feature_cols:
+        data[col] = rng.permutation(data[col].values)
+
+    return phate_leiden_pipeline(
+        data, resolution, phate_distance_metric, first_feature_name=first_feature_name
+    )
 
 
 def run_leiden_clustering(weights, resolution=1.0, seed=42):
