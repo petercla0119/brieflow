@@ -21,6 +21,7 @@ def phate_leiden_pipeline(
     phate_distance_metric,
     first_feature_name="PC_0",
     return_potential=False,
+    inherit_params_from=None,
 ):
     """Run complete PHATE dimensionality reduction and Leiden clustering pipeline.
 
@@ -30,6 +31,9 @@ def phate_leiden_pipeline(
         phate_distance_metric (str): Distance metric for PHATE algorithm (e.g., 'euclidean', 'cosine').
         first_feature_name (str, optional): Name of first feature column. Defaults to "PC_0".
         return_potential (bool, optional): Whether to return the reshaped potential array. Defaults to False.
+        inherit_params_from (phate.PHATE, optional): A fitted PHATE object whose auto-selected
+            ``t`` value will be reused, skipping the Von Neumann Entropy computation.
+            Defaults to None.
 
     Returns:
         pd.DataFrame or tuple: DataFrame with original metadata, PHATE coordinates and cluster assignments.
@@ -45,7 +49,11 @@ def phate_leiden_pipeline(
     metadata_cols = all_cols[:feature_start_idx]
 
     # Run PHATE
-    df_phate, p = run_phate(feature_selected_data, metric=phate_distance_metric)
+    df_phate, p = run_phate(
+        feature_selected_data,
+        metric=phate_distance_metric,
+        inherit_params_from=inherit_params_from,
+    )
 
     # Create a DataFrame from the potential matrix
     potential = p.diff_potential
@@ -54,7 +62,8 @@ def phate_leiden_pipeline(
     )
 
     # Get weights from PHATE
-    weights = np.asarray(p.graph.diff_op.todense())
+    diff_op = p.diff_op
+    weights = np.asarray(diff_op.todense() if hasattr(diff_op, "todense") else diff_op)
 
     # Run Leiden clustering
     clusters = run_leiden_clustering(weights, resolution=resolution)
@@ -78,11 +87,63 @@ def phate_leiden_pipeline(
         return result_df
 
 
+def phate_leiden_sweep(
+    aggregated_data,
+    resolutions,
+    phate_distance_metric,
+    first_feature_name="PC_0",
+    **phate_kwargs,
+):
+    """Run PHATE once and cluster at multiple Leiden resolutions.
+
+    Avoids rebuilding the PHATE graph for every resolution, giving a
+    speedup proportional to the number of resolutions tested.
+
+    Args:
+        aggregated_data (pd.DataFrame): Input data with metadata and feature columns.
+        resolutions (list[float]): Leiden resolution parameters to sweep.
+        phate_distance_metric (str): Distance metric for PHATE.
+        first_feature_name (str, optional): Name of first feature column. Defaults to "PC_0".
+        **phate_kwargs: Additional keyword arguments passed to ``run_phate``.
+
+    Returns:
+        dict[float, pd.DataFrame]: Mapping from resolution to clustering result DataFrame.
+    """
+    all_cols = aggregated_data.columns.tolist()
+    feature_start_idx = all_cols.index(first_feature_name)
+    feature_cols = all_cols[feature_start_idx:]
+    metadata_cols = all_cols[:feature_start_idx]
+
+    df_phate, p = run_phate(
+        aggregated_data[feature_cols],
+        metric=phate_distance_metric,
+        **phate_kwargs,
+    )
+
+    diff_op = p.diff_op
+    weights = np.asarray(diff_op.todense() if hasattr(diff_op, "todense") else diff_op)
+
+    results = {}
+    for resolution in resolutions:
+        clusters = run_leiden_clustering(weights, resolution=resolution)
+        result_df = df_phate.copy()
+        result_df["cluster"] = clusters
+        result_df = pd.concat(
+            [aggregated_data[metadata_cols].reset_index(drop=True), result_df],
+            axis=1,
+        )
+        result_df = result_df.sort_values(by=["cluster"])
+        results[resolution] = result_df
+
+    return results
+
+
 def run_phate(
     feature_selected_data,
     random_state=42,
     knn=10,
     metric="euclidean",
+    inherit_params_from=None,
     **kwargs,
 ):
     """Run PHATE dimensionality reduction.
@@ -95,6 +156,9 @@ def run_phate(
         random_state (int, optional): Random seed for reproducibility. Defaults to 42.
         knn (int, optional): Number of nearest neighbors to use. Defaults to 10.
         metric (str, optional): Distance metric for KNN calculations. Defaults to 'euclidean'.
+        inherit_params_from (phate.PHATE, optional): A fitted PHATE object whose
+            auto-selected ``t`` is reused, skipping the Von Neumann Entropy search.
+            Defaults to None.
         **kwargs: Additional parameters to pass to the PHATE constructor.
 
     Returns:
@@ -102,19 +166,21 @@ def run_phate(
             pd.DataFrame: DataFrame with PHATE coordinates.
             phate.PHATE: Fitted PHATE object with graph and other attributes.
     """
-    # Initialize and run PHATE
+    t = "auto"
+    if inherit_params_from is not None and inherit_params_from.optimal_t is not None:
+        t = inherit_params_from.optimal_t
+
     p = phate.PHATE(
         random_state=random_state,
         n_jobs=-1,
         knn=knn,
         knn_dist=metric,
+        t=t,
         verbose=False,
     )
 
-    # Transform data
     X_phate = p.fit_transform(feature_selected_data.values)
 
-    # Create output DataFrame
     df_phate = pd.DataFrame(
         X_phate, index=feature_selected_data.index, columns=["PHATE_0", "PHATE_1"]
     )

@@ -26,7 +26,10 @@ from statsmodels.stats.multitest import multipletests
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from lib.cluster.phate_leiden_clustering import phate_leiden_pipeline
+from lib.cluster.phate_leiden_clustering import (
+    phate_leiden_pipeline,
+    phate_leiden_sweep,
+)
 from lib.cluster.scrape_benchmarks import filter_complexes
 
 
@@ -160,14 +163,15 @@ def evaluate_resolution(
     for benchmark_name in group_benchmarks.keys():
         all_results[benchmark_name] = []
 
-    # Perform clustering for each resolution
-    for resolution in leiden_resolutions:
-        print(f"Creating clusters for resolution: {resolution}")
+    # Run PHATE once and cluster at all resolutions
+    print(f"Running PHATE once for {len(leiden_resolutions)} resolutions...")
+    clusterings = phate_leiden_sweep(
+        aggregated_data, leiden_resolutions, phate_distance_metric
+    )
 
-        # Generate clustering for this resolution
-        clustering = phate_leiden_pipeline(
-            aggregated_data, resolution, phate_distance_metric
-        )
+    for resolution in leiden_resolutions:
+        print(f"Evaluating resolution: {resolution}")
+        clustering = clusterings[resolution]
 
         # For each benchmark, calculate metrics
         for benchmark_name, group_df in group_benchmarks.items():
