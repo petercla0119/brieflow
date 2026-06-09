@@ -166,9 +166,10 @@ class TestReuseGraph:
         assert df2.shape == (100, 2)
         assert not df2.isna().any().any()
 
-        # The inherited t should be used (stored in optimal_t after fit)
+        # When t is inherited, PHATE uses it as a fixed value (skips VNE)
+        # so optimal_t is not set. Verify the constructor received the value.
         if p1.optimal_t is not None:
-            assert p2.optimal_t == p1.optimal_t
+            assert p2.t == p1.optimal_t
 
     def test_pipeline_with_inherit_params(self):
         from lib.cluster.phate_leiden_clustering import phate_leiden_pipeline, run_phate
