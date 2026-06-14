@@ -28,6 +28,10 @@ _REQUEST_HEADERS = {
     "User-Agent": "brieflow/1.5 (+https://github.com/cheeseman-lab/brieflow)"
 }
 
+_REQUEST_HEADERS = {
+    "User-Agent": "brieflow/1.5 (+https://github.com/cheeseman-lab/brieflow)"
+}
+
 import pandas as pd
 
 
