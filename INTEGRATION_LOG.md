@@ -75,7 +75,7 @@ Cherry-pick unique commits in logical order, grouped by topic. Skip duplicates a
 
 **Skipped**: `73f7aec` (ruff format on image_io.py) — replaced by unified ruff pass in Action 5.
 
-**Status**: PENDING
+**Result**: ✓ Both commits applied cleanly. New SHAs: `7b6b034`, `3be5992`.
 
 ---
 
@@ -93,7 +93,7 @@ Cherry-pick unique commits in logical order, grouped by topic. Skip duplicates a
 
 **Skipped**: `f2aaca2` (ruff linting across 4 files including image_io.py) — would conflict with enhance metadata changes on image_io.py. Replaced by unified ruff pass.
 
-**Status**: PENDING
+**Result**: ✓ All 4 commits applied cleanly. New SHAs: `e36a9fc`, `8ae123e`, `ecda608`, `1430f97`.
 
 ---
 
@@ -109,7 +109,7 @@ Cherry-pick unique commits in logical order, grouped by topic. Skip duplicates a
 - `76d834f` (PR #224) — squashed duplicate of the 3 enhance commits; identical +15/-6 diff on image_io.py
 - `89481b7` (merge commit) — merge artifact bringing PR #224 into fix branch; no unique content
 
-**Status**: PENDING
+**Result**: ✓ Applied cleanly. New SHA: `86d049f`.
 
 ---
 
@@ -123,7 +123,15 @@ Cherry-pick unique commits in logical order, grouped by topic. Skip duplicates a
 
 These two commits both modify image_io.py with different base states and would conflict if cherry-picked. A single unified pass ensures consistent formatting across all files touched by the integration.
 
-**Status**: PENDING
+**Tool**: `ruff 0.15.18` via `uvx ruff check --fix workflow/` + `uvx ruff format workflow/`.
+
+**Files reformatted** (4 — exactly matching the union of both skipped commits):
+- `workflow/lib/classify/shared.py`
+- `workflow/lib/external/cp_emulator.py`
+- `workflow/lib/shared/image_io.py`
+- `workflow/scripts/cluster/format_cluster_anndata.py`
+
+**Result**: ✓ Committed as `f66c315`.
 
 ---
 
@@ -147,6 +155,64 @@ These two commits both modify image_io.py with different base states and would c
 
 ---
 
+## Verification results
+
+### Commit count
+`git log --oneline upstream/zarr3..integrate/zarr3-streamlined` shows 10 commits:
+1. `05e9ff9` docs: add INTEGRATION_LOG.md for zarr3 branch consolidation
+2. `7b6b034` fix(io): add missing omero window field to OME-Zarr channel metadata
+3. `3be5992` fix(io): lowercase axis names in OME-Zarr metadata for spec compliance
+4. `e36a9fc` Fix KeyError when gene_id column is absent in design table
+5. `8ae123e` fix(classify): add OME-Zarr support to load_aligned_stack and load_mask_labels
+6. `ecda608` fix(classify): add HCS nested parquet paths to load_parquet
+7. `1430f97` fix(aggregate): coerce NaN in object-typed obs columns before h5ad write
+8. `86d049f` cluster: report median genes/cluster in evaluate_resolution
+9. `f66c315` style: unified ruff formatting pass
+10. `26f38bc` docs: finalize INTEGRATION_LOG.md with verification results and cleanup recs
+
+### Diff vs origin/fix/zarr3-bugfixes
+**Only difference: `INTEGRATION_LOG.md` (new file)**. All code content is identical. This confirms the integration captured every unique change from the most complete source branch.
+
+### Diff vs origin/test-zarr3
+Differences are exactly:
+- `INTEGRATION_LOG.md` (new)
+- `benchmark_clusters.py` +11 lines (cluster median genes — test-zarr3 never had this)
+- 4 files with ruff formatting differences (test-zarr3 never had a ruff pass)
+
+This matches expectations: test-zarr3 was missing the cluster enhancement and ruff formatting.
+
+### Conclusion
+The `integrate/zarr3-streamlined` branch is a **superset of all source branches** with no duplicate commits and no missing content. Total: 166 commits ahead of main (156 base + 10 integration).
+
+---
+
 ## Branch cleanup recommendations
 
-*To be added after integration is complete.*
+After verifying that `integrate/zarr3-streamlined` works correctly in the pipeline, the following branches can be cleaned up to avoid confusion:
+
+### Safe to delete (all content integrated)
+
+| Branch | Why safe | Command |
+|--------|----------|---------|
+| `fix/zarr3-bugfixes` (local) | All 4 bugfix commits cherry-picked; ruff replaced by unified pass | `git branch -D fix/zarr3-bugfixes` |
+| `origin/fix/zarr3-bugfixes` | All unique content (cluster median) cherry-picked; PR #224 and merge commit are duplicates | `git push origin --delete fix/zarr3-bugfixes` |
+| `origin/test-zarr3` | All 6 commits are duplicates of enhance + fix content | `git push origin --delete test-zarr3` |
+| `test-zarr3` (local, if exists) | Same as remote | `git branch -D test-zarr3` |
+| `origin/test_branch` | Fully merged into main, no zarr3 content, 70 commits behind | `git push origin --delete test_branch` |
+
+### Keep for now (active or upstream-owned)
+
+| Branch | Why keep |
+|--------|----------|
+| `enhance/zarr3-omezarr-metadata` (local + remote) | Currently checked out and running pipeline code. Delete after switching to `integrate/zarr3-streamlined`. |
+| `upstream/zarr3` | Upstream-owned. Do not delete from fork; this is the integration base and may receive future commits from cheeseman-lab. |
+| `upstream/zarr3-transition` | Upstream-owned. Historical reference. |
+| `upstream/zarr3-merge-main-speed` | Upstream-owned. Historical reference. |
+
+### Recommended workflow after cleanup
+
+1. Verify `integrate/zarr3-streamlined` passes the pipeline on current data
+2. Switch main working tree to `integrate/zarr3-streamlined`
+3. Delete the "safe to delete" branches above
+4. Push `integrate/zarr3-streamlined` to origin: `git push -u origin integrate/zarr3-streamlined`
+5. Future zarr3 work should branch from `integrate/zarr3-streamlined`
