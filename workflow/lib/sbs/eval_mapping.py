@@ -316,11 +316,18 @@ def plot_cell_mapping_heatmap(
         print(f"ANY_MAP_RATE:    {mean_rate:.4f}  (informational; n_total={n_total})")
 
     if return_summary and return_plot:
-        # Plot heatmap
-        fig, _ = plot_plate_heatmap(df_summary, metadata=metadata, **kwargs)
+        if df_summary.empty:
+            fig, _ = plt.subplots(1, 1, figsize=(10, 10))
+            fig.text(0.5, 0.5, "No mapped cells", ha="center", va="center", fontsize=14)
+        else:
+            fig, _ = plot_plate_heatmap(df_summary, metadata=metadata, **kwargs)
         return df_summary, fig
     elif return_plot:
-        fig, _ = plot_plate_heatmap(df_summary, metadata=metadata, **kwargs)
+        if df_summary.empty:
+            fig, _ = plt.subplots(1, 1, figsize=(10, 10))
+            fig.text(0.5, 0.5, "No mapped cells", ha="center", va="center", fontsize=14)
+        else:
+            fig, _ = plot_plate_heatmap(df_summary, metadata=metadata, **kwargs)
         return fig
     elif return_summary:
         return df_summary
