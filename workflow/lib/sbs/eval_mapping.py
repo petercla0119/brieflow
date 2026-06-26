@@ -269,12 +269,11 @@ def plot_cell_mapping_heatmap(
     """
     # Mark cells as mapped or unmapped based on provided barcodes or gene symbols
     if mapping_strategy == "barcodes":
-        df_cells.loc[:, ["mapped_0", "mapped_1"]] = (
-            df_cells[["cell_barcode_0", "cell_barcode_1"]].isin(barcodes).values
-        )
+        df_cells["mapped_0"] = df_cells["cell_barcode_0"].isin(barcodes).astype(int) if "cell_barcode_0" in df_cells.columns else 0
+        df_cells["mapped_1"] = df_cells["cell_barcode_1"].isin(barcodes).astype(int) if "cell_barcode_1" in df_cells.columns else 0
     elif mapping_strategy == "gene symbols":
-        df_cells["mapped_0"] = (~df_cells["gene_symbol_0"].isna()).astype(int)
-        df_cells["mapped_1"] = (~df_cells["gene_symbol_1"].isna()).astype(int)
+        df_cells["mapped_0"] = (~df_cells["gene_symbol_0"].isna()).astype(int) if "gene_symbol_0" in df_cells.columns else 0
+        df_cells["mapped_1"] = (~df_cells["gene_symbol_1"].isna()).astype(int) if "gene_symbol_1" in df_cells.columns else 0
     else:
         raise ValueError(
             f"Invalid mapping strategy: {mapping_strategy}. Choose 'barcodes' or 'gene symbols'."
@@ -640,10 +639,10 @@ def mapping_overview(sbs_info, cells, sort_by="count"):
     cells_temp = cells.copy()
     cells_temp["has_barcode_0"] = (~cells_temp["cell_barcode_0"].isna()) & (
         cells_temp["cell_barcode_0"] != ""
-    )
+    ) if "cell_barcode_0" in cells_temp.columns else False
     cells_temp["has_barcode_1"] = (~cells_temp["cell_barcode_1"].isna()) & (
         cells_temp["cell_barcode_1"] != ""
-    )
+    ) if "cell_barcode_1" in cells_temp.columns else False
     cells_temp["barcode_mapping_count"] = cells_temp["has_barcode_0"].astype(
         int
     ) + cells_temp["has_barcode_1"].astype(int)
@@ -692,8 +691,10 @@ def mapping_overview(sbs_info, cells, sort_by="count"):
     )
 
     # Count and calculate percent of cells with 1 gene symbol mapping per well
+    has_gs0 = ~cells["gene_symbol_0"].isna() if "gene_symbol_0" in cells.columns else pd.Series(False, index=cells.index)
+    has_gs1 = ~cells["gene_symbol_1"].isna() if "gene_symbol_1" in cells.columns else pd.Series(False, index=cells.index)
     one_gene_mapping = (
-        cells[(~cells["gene_symbol_0"].isna()) & (cells["gene_symbol_1"].isna())]
+        cells[has_gs0 & ~has_gs1]
         .groupby("well")
         .size()
         .reset_index(name="1_gene_cells__count")
@@ -706,7 +707,7 @@ def mapping_overview(sbs_info, cells, sort_by="count"):
 
     # Count and calculate percent of cells with >=1 gene symbol mapping per well
     multiple_gene_mapping = (
-        cells[(~cells["gene_symbol_0"].isna()) | (~cells["gene_symbol_1"].isna())]
+        cells[has_gs0 | has_gs1]
         .groupby("well")
         .size()
         .reset_index(name="1_or_more_genes__count")
