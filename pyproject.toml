@@ -53,7 +53,7 @@ dependencies = [
   "dask[array]",
   "fsspec",
   "iohub>=0.2.0",
-  "stitch @ file:///Users/cspeters/projects/ops/stitching",
+  "stitch @ git+https://github.com/ahillsley/stitching.git@bd8500e",
 ]
 
 
