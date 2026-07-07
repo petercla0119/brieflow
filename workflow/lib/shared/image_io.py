@@ -58,7 +58,7 @@ def read_image(path: PathLike) -> np.ndarray:
     if p.suffix.lower() == ".zarr" or p.is_dir():
         root = zarr.open_group(str(p), mode="r")
         ds_path: Optional[str] = None
-        ms = root.attrs.get("multiscales")
+        ms = root.attrs.get("multiscales") or (root.attrs.get("ome", {}) or {}).get("multiscales")
         if isinstance(ms, list) and ms:
             datasets = ms[0].get("datasets", [])
             if datasets and isinstance(datasets, list):
