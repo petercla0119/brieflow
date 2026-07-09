@@ -876,7 +876,7 @@ def process_merge(config, args):
     # Load tile combos for stitch approach
     tile_combos = None
     if approach == "stitch" and (run_per_well or run_stitch_only):
-        ph_combo_fp = config.get("phenotype", {}).get("phenotype_combo_fp")
+        ph_combo_fp = config.get("preprocess", {}).get("phenotype_combo_fp")
         if ph_combo_fp:
             tile_combos = pd.read_csv(ph_combo_fp, sep="\t").astype(str)
 
