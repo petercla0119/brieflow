@@ -323,6 +323,21 @@ def run_stitch(merge_cfg, pp_fp, module_fp, merge_fp, fmt, plate, well, data_typ
     from lib.merge.stitch import assemble_aligned_tiff_well, assemble_stitched_masks, extract_cell_positions_from_stitched_mask
     from lib.merge.eval_stitch import create_tile_arrangement_qc_plot, create_empty_qc_plot
 
+    # ponytail: patch io.imread to handle zarr tile paths
+    if fmt == "zarr":
+        import skimage.io as _skio
+        _orig_imread = _skio.imread
+        def _zarr_imread(path, **kw):
+            p = Path(path)
+            if p.is_dir() or str(path).endswith("zarr.json"):
+                import zarr
+                d = p.parent if str(path).endswith("zarr.json") else p
+                z = zarr.open(str(d), mode="r")
+                arr = z["0"][:] if "0" in z else z[:]
+                return arr.squeeze()
+            return _orig_imread(path, **kw)
+        _skio.imread = _zarr_imread
+
     metadata = validate_dtypes(read_parquet(preprocess_metadata_path(pp_fp, fmt, plate, well, data_type)))
 
     filters = {}
@@ -346,10 +361,19 @@ def run_stitch(merge_cfg, pp_fp, module_fp, merge_fp, fmt, plate, well, data_typ
     shifts = stitch_config["total_translation"]
 
     tiles = sorted(tile_combos["tile"].unique())
-    tile_files = {t: tile_image_path(module_fp, fmt, plate, well, t, "aligned") for t in tiles}
-    mask_files = {t: tile_image_path(module_fp, fmt, plate, well, t, "nuclei", subdirectory="labels") for t in tiles}
-    tile_files = {t: p for t, p in tile_files.items() if Path(p).exists()}
-    mask_files = {t: p for t, p in mask_files.items() if Path(p).exists()}
+    tile_files = {}
+    mask_files = {}
+    for t in tiles:
+        tp = tile_image_path(module_fp, fmt, plate, well, t, "aligned")
+        mp = tile_image_path(module_fp, fmt, plate, well, t, "nuclei", subdirectory="labels")
+        # ponytail: zarr paths point to directories, not files
+        if fmt == "zarr":
+            tp = str(Path(tp).parent) if tp.endswith("zarr.json") else tp
+            mp = str(Path(mp).parent) if mp.endswith("zarr.json") else mp
+        if Path(tp).exists():
+            tile_files[int(t)] = tp
+        if Path(mp).exists():
+            mask_files[int(t)] = mp
 
     flipud = merge_cfg.get("flipud", False)
     fliplr = merge_cfg.get("fliplr", False)
