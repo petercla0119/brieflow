@@ -898,18 +898,28 @@ def process_merge(config, args):
                     print(f"    fast_merge: {time.time() - t0:.1f}s")
 
                 elif approach == "stitch":
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+
                     well_tiles = tile_combos[(tile_combos["plate"] == str(plate)) & (tile_combos["well"] == str(well))] if tile_combos is not None else pd.DataFrame(columns=["tile"])
 
-                    for dt in ("phenotype", "sbs"):
-                        t0 = time.time()
-                        run_estimate_stitch(merge_cfg, pp_fp, merge_fp, fmt, plate, well, dt)
-                        print(f"    estimate_stitch_{dt}: {time.time() - t0:.1f}s")
+                    # ponytail: estimate_stitch is fast (~20s), parallelize anyway
+                    t0 = time.time()
+                    with ThreadPoolExecutor(max_workers=2) as ex:
+                        futs = {ex.submit(run_estimate_stitch, merge_cfg, pp_fp, merge_fp, fmt, plate, well, dt): dt for dt in ("phenotype", "sbs")}
+                        for f in as_completed(futs):
+                            f.result()
+                            print(f"    estimate_stitch_{futs[f]}: {time.time() - t0:.1f}s")
 
-                    for dt in ("phenotype", "sbs"):
-                        module_fp = phenotype_fp if dt == "phenotype" else sbs_fp
-                        t0 = time.time()
-                        run_stitch(merge_cfg, pp_fp, module_fp, merge_fp, fmt, plate, well, dt, well_tiles)
-                        print(f"    stitch_{dt}: {time.time() - t0:.1f}s")
+                    # stitch phenotype + sbs in parallel — the big win
+                    t0 = time.time()
+                    with ThreadPoolExecutor(max_workers=2) as ex:
+                        stitch_futs = {}
+                        for dt in ("phenotype", "sbs"):
+                            module_fp = phenotype_fp if dt == "phenotype" else sbs_fp
+                            stitch_futs[ex.submit(run_stitch, merge_cfg, pp_fp, module_fp, merge_fp, fmt, plate, well, dt, well_tiles)] = dt
+                        for f in as_completed(stitch_futs):
+                            f.result()
+                            print(f"    stitch_{stitch_futs[f]}: {time.time() - t0:.1f}s")
 
                     t0 = time.time()
                     run_stitch_alignment(merge_cfg, merge_fp, fmt, plate, well)
