@@ -414,6 +414,13 @@ def multistep_alignment(
     # Initialize alignments list with the initial matches
     alignments = [df_initial.query(gate)]
 
+    # ponytail: hash groupby dicts never change across iterations; build once instead
+    # of re-grouping the (multi-million-row) triangle tables every loop. With the
+    # unhashable-pair fix the loop now runs many more iterations, so this rebuild was
+    # the dominant cost.
+    d_0 = dict(list(well_triangles_0.groupby("tile")))
+    d_1 = dict(list(well_triangles_1.groupby("site")))
+
     # Main loop for iterating until convergence
     while True:
         # Concatenate alignments and remove duplicates
@@ -432,18 +439,46 @@ def multistep_alignment(
         # Prepare data for parallel processing
         work = []
         processed_candidates = []  # Track which candidates were actually processed
-        d_0 = dict(list(well_triangles_0.groupby("tile")))
-        d_1 = dict(list(well_triangles_1.groupby("site")))
+        skipped_candidates = []  # ponytail: unhashable pairs to retire (see below)
         for ix_0, ix_1 in candidates[:batch_size]:
             if ix_0 in d_0 and ix_1 in d_1:  # Only process if both keys exist
                 work.append([d_0[ix_0], d_1[ix_1]])
                 processed_candidates.append((ix_0, ix_1))
             else:
-                print(f"Skipping tile {ix_0}, site {ix_1} - not found in data")
+                skipped_candidates.append((ix_0, ix_1))
 
-        if not work:  # If no valid pairs found, end alignment
-            print("No valid pairs to process")
+        # ponytail: retire unhashable pairs into `tested` (score=-1 so they never pass
+        # the gate). well_locations_1/0 include sites/tiles that segmented too few
+        # cells to hash (e.g. sbs sites 787/850/913/976), so `prioritize` keeps
+        # emitting them. The old code skipped them but never recorded them, so they
+        # perpetually re-filled the front of the distance-sorted candidate window and
+        # starved the batch after a few iterations ("No valid pairs to process"),
+        # capping coverage at ~1 phenotype tile per SBS site. Retiring them lets the
+        # frontier advance to every phenotype tile that overlaps each SBS site (~5x
+        # here); downstream deduplicate_cells resolves the overlap duplicates.
+        if skipped_candidates:
+            alignments.append(
+                pd.DataFrame(
+                    {
+                        "tile": [t for t, _ in skipped_candidates],
+                        "site": [s for _, s in skipped_candidates],
+                        "score": -1.0,
+                        "determinant": np.nan,
+                        "rotation": None,
+                        "translation": None,
+                    }
+                )
+            )
+
+        if not candidates:  # nothing left to try at all -> clean termination
+            print("No candidates remain")
             break
+
+        if not work:
+            # ponytail: batch was entirely unhashable pairs (now retired above);
+            # continue so the frontier advances past the unhashable block instead of
+            # terminating alignment early.
+            continue
 
         # Perform parallel processing of work
         df_align_new = pd.concat(
