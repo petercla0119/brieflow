@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -94,7 +95,13 @@ def preprocess_ic_path(pp_fp, fmt, plate, well, cycle):
 # Parallel execution helper
 # ---------------------------------------------------------------------------
 
-def run_parallel(tasks, fn, workers, label):
+def _worker_init_gpu(num_gpus, omp_threads=4):
+    """Worker initializer for GPU steps. Pins worker to a GPU via pid hash."""
+    os.environ["OMP_NUM_THREADS"] = str(omp_threads)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(os.getpid() % num_gpus)
+
+
+def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -102,7 +109,7 @@ def run_parallel(tasks, fn, workers, label):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    with ProcessPoolExecutor(max_workers=workers, initializer=initializer, initargs=initargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -116,7 +123,9 @@ def run_parallel(tasks, fn, workers, label):
             total = ok + skip + err
             if total == n or total % max(1, n // 20) == 0:
                 print(f"    [{total}/{n}] {time.time() - t0:.0f}s  new={ok} skip={skip} err={err}")
-    print(f"  {label}: done in {time.time() - t0:.1f}s")
+    elapsed = time.time() - t0
+    print(f"  {label}: done in {elapsed:.1f}s")
+    print(f"  PERF: {label}: {n} tasks, {workers} workers, {elapsed:.1f}s")
     return err
 
 
@@ -466,6 +475,7 @@ def process_sbs(config, args):
 
     errs = 0
     w = args.workers
+    align_w = args.align_workers or w
     extra_ch = sbs_cfg.get("extra_channel_indices", [])
     spot_params = get_spot_detection_params(config)
     seg_params = get_segmentation_params("sbs", config)
@@ -474,25 +484,33 @@ def process_sbs(config, args):
     segment_cells_flag = sbs_cfg.get("segment_cells", True)
 
     run_tiles = args.step in ("tiles", "all")
+    run_pre_seg = args.step in ("tiles", "pre-seg", "all")
+    run_segment = args.step in ("tiles", "segment", "all")
+    run_post_seg = args.step in ("tiles", "post-seg", "all")
     run_combine = args.step in ("combine", "all")
 
-    # ponytail: in combine-only mode, empty tile_combos so all run_parallel calls are no-ops
-    if not run_tiles:
+    # ponytail: gate tile_combos to empty for phases that don't run
+    if not (run_pre_seg or run_segment or run_post_seg):
         tile_combos = tile_combos.iloc[0:0]
+
+    # ponytail: per-phase tile views — out_exists() skips already-done; empty = no tasks
+    pre_seg_tc = tile_combos if run_pre_seg else tile_combos.iloc[0:0]
+    segment_tc = tile_combos if run_segment else tile_combos.iloc[0:0]
+    post_seg_tc = tile_combos if run_post_seg else tile_combos.iloc[0:0]
 
     # --- Step 1: Align ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "aligned")
         cycles = sorted(cycles_by_tile[(p, we, ti)], key=int)
         cycle_paths = [preprocess_img_path(pp_fp, fmt, p, we, ti, c) for c in cycles]
         tasks.append((cycle_paths, out, sbs_cfg))
-    errs += run_parallel(tasks, _align_one, w, "Align cycles")
+    errs += run_parallel(tasks, _align_one, align_w, "Align cycles")
 
     # --- Step 2: Log filter ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "aligned")
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "log_filtered")
@@ -501,7 +519,7 @@ def process_sbs(config, args):
 
     # --- Step 3: Std deviation ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "log_filtered")
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "standard_deviation")
@@ -510,7 +528,7 @@ def process_sbs(config, args):
 
     # --- Step 4: Find peaks ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         if use_std_dev:
             inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "standard_deviation")
@@ -522,7 +540,7 @@ def process_sbs(config, args):
 
     # --- Step 5: Max filter ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "log_filtered")
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "max_filtered")
@@ -534,7 +552,7 @@ def process_sbs(config, args):
     tasks = []
     dapi_cyc = str(sbs_cfg["dapi_cycle"])
     cyto_cyc = str(sbs_cfg["cyto_cycle"])
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         aligned_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "aligned")
         ic_dapi = preprocess_ic_path(pp_fp, fmt, p, we, dapi_cyc)
@@ -544,20 +562,37 @@ def process_sbs(config, args):
     errs += run_parallel(tasks, _apply_ic_one, w, "Apply IC field")
 
     # --- Step 7: Segment ---
-    seg_workers = 1 if seg_params.get("gpu", False) else min(w, 16)
+    seg_gpus = args.seg_gpus
+    if args.gpu and seg_gpus > 1:
+        try:
+            import torch
+            actual = torch.cuda.device_count()
+            if actual < seg_gpus:
+                print(f"  WARN: --seg-gpus {seg_gpus} but only {actual} GPU(s) detected, clamping")
+                seg_gpus = max(1, actual)
+        except Exception:
+            pass
+    if args.seg_workers:
+        seg_workers = args.seg_workers
+    elif args.gpu:
+        seg_workers = seg_gpus
+    else:
+        seg_workers = min(w, 16)
+    seg_init = (_worker_init_gpu, (seg_gpus,)) if args.gpu and seg_gpus > 1 else (None, ())
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in segment_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "illumination_corrected")
         n_out = sbs_img_path(sbs_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
         c_out = sbs_img_path(sbs_fp, fmt, p, we, ti, "cells", subdirectory="labels")
         s_out = sbs_data_path(sbs_fp, fmt, p, we, ti, "segmentation_stats", "tsv")
         tasks.append((inp, n_out, c_out, s_out, seg_params))
-    errs += run_parallel(tasks, _segment_one, seg_workers, "Segment SBS")
+    errs += run_parallel(tasks, _segment_one, seg_workers, "Segment SBS",
+                         initializer=seg_init[0], initargs=seg_init[1])
 
     # --- Step 8: Extract bases ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         peaks_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "peaks")
         maxf_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "max_filtered")
@@ -573,7 +608,7 @@ def process_sbs(config, args):
     # --- Step 9: Call reads ---
     cr_method = sbs_cfg.get("call_reads_method", "median")
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         bases_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "bases", "tsv")
         peaks_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "peaks")
@@ -583,7 +618,7 @@ def process_sbs(config, args):
 
     # --- Step 10: Call cells ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "tsv")
         out = sbs_data_path(sbs_fp, fmt, p, we, ti, "cells", "tsv")
@@ -592,7 +627,7 @@ def process_sbs(config, args):
 
     # --- Step 11: Extract SBS info ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         nuclei_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
         out = sbs_data_path(sbs_fp, fmt, p, we, ti, "sbs_info", "tsv")
@@ -745,6 +780,7 @@ def process_sbs(config, args):
 
                 def _save(info, ext, fig_or_df):
                     path = sbs_plate_path(sbs_fp, fmt, plate, info, ext, "mapping")
+                    Path(path).parent.mkdir(parents=True, exist_ok=True)
                     if isinstance(fig_or_df, pd.DataFrame):
                         fig_or_df.to_csv(path, index=False, sep="\t")
                     else:
@@ -802,8 +838,14 @@ def main():
                    help="Start index into sorted tile list (for SLURM array partitioning)")
     p.add_argument("--tile-end", type=int, default=None,
                    help="End index into sorted tile list (exclusive)")
-    p.add_argument("--step", choices=["tiles", "combine", "all"], default="all",
-                   help="tiles=per-tile steps 1-11, combine=merge+eval 12-16, all=everything")
+    p.add_argument("--step", choices=["tiles", "pre-seg", "segment", "post-seg", "combine", "all"], default="all",
+                   help="tiles=per-tile steps 1-11, pre-seg=steps 1-6 (CPU), segment=step 7 (GPU), post-seg=steps 8-11 (CPU), combine=merge+eval 12-16, all=everything")
+    p.add_argument("--align-workers", type=int, default=None,
+                   help="Workers for alignment step (default: same as --workers)")
+    p.add_argument("--seg-workers", type=int, default=None,
+                   help="Workers for segmentation step (default: seg-gpus if --gpu, else --workers)")
+    p.add_argument("--seg-gpus", type=int, default=1,
+                   help="Number of GPUs for segmentation (default: 1)")
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
