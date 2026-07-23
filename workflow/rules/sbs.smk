@@ -290,7 +290,34 @@ rule eval_mapping:
         "../scripts/sbs/eval_mapping.py"
 
 
+if SBS_IMG_FMT == "zarr":
+
+    rule finalize_hcs_sbs:
+        input:
+            SBS_TARGETS_ALL,
+        output:
+            touch(str(SBS_FP / ".hcs_done")),
+        params:
+            plate_zarr_dirs=[
+                str(SBS_FP / f"{store}_{p}.zarr")
+                for p in sorted(sbs_wildcard_combos["plate"].unique())
+                for store in [
+                    "aligned",
+                    "illumination_corrected",
+                    "log_filtered",
+                    "max_filtered",
+                    "peaks",
+                    "standard_deviation",
+                ]
+            ],
+            channels_metadata=config["preprocess"].get("sbs_channels_metadata", None),
+            channel_names=config["sbs"].get("channel_names", None),
+            modality="sbs",
+        script:
+            "../scripts/shared/write_hcs_metadata.py"
+
+
 # rule for all sbs processing steps
 rule all_sbs:
     input:
-        SBS_TARGETS_ALL,
+        SBS_TARGETS_ALL + ([str(SBS_FP / ".hcs_done")] if SBS_IMG_FMT == "zarr" else []),
