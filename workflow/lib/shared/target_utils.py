@@ -57,22 +57,25 @@ def outputs_to_targets(module_outputs, wildcards_df, module_target_mappings):
     """Convert module output templates to concrete target paths using Snakemake expand."""
     targets = []
 
-    # Extract all wildcards as separate lists for zip expansion
-    wildcard_values = {col: wildcards_df[col].tolist() for col in wildcards_df.columns}
-
-    # Process each rule's outputs
     for rule_name, rule_outputs in module_outputs.items():
         if module_target_mappings[rule_name] == temp:
             continue
 
         for output in rule_outputs:
-            # Convert output to string
             output_str = str(output)
-
-            # Use Snakemake's expand with zip for efficient path generation
-            # Check if output_str contains any wildcard placeholders (i.e., "{")
             if "{" in output_str and "}" in output_str:
-                expanded_outputs = expand(output_str, zip, **wildcard_values)
+                # ponytail: only expand on wildcards referenced in this template;
+                # plate-level outputs were generating O(N*templates) duplicates at big1 scale
+                template_wildcards = {
+                    f for _, f, _, _ in string.Formatter().parse(output_str) if f
+                }
+                relevant_cols = [c for c in wildcards_df.columns if c in template_wildcards]
+                if relevant_cols:
+                    deduped = wildcards_df[relevant_cols].drop_duplicates()
+                    wc_vals = {col: deduped[col].tolist() for col in relevant_cols}
+                    expanded_outputs = expand(output_str, zip, **wc_vals)
+                else:
+                    expanded_outputs = [output_str]
                 targets.extend(expanded_outputs)
             else:
                 targets.append(output_str)
