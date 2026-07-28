@@ -118,6 +118,9 @@ rule calculate_ic_sbs:
         ),
     output:
         PREPROCESS_OUTPUTS_MAPPED["calculate_ic_sbs"],
+    threads: 6
+    resources:
+        mem_mb=8000,
     params:
         threading=True,
         sample_fraction=config.get("preprocess", {}).get("sample_fraction", 1),
@@ -136,6 +139,9 @@ rule calculate_ic_phenotype:
         ),
     output:
         PREPROCESS_OUTPUTS_MAPPED["calculate_ic_phenotype"],
+    threads: 6
+    resources:
+        mem_mb=8000,
     params:
         threading=True,
         sample_fraction=config.get("preprocess", {}).get("sample_fraction", 1),

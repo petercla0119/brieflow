@@ -25,6 +25,7 @@ def calculate_ic_field(
     threading: bool = False,
     slicer: slice = slice(None),
     sample_fraction: float = 1.0,
+    n_jobs: int = 6,
 ) -> np.ndarray:
     """Calculate illumination correction field for use with the apply_ic_field.
 
@@ -43,6 +44,8 @@ def calculate_ic_field(
         threading (bool, optional): Whether to use threading for parallel processing. Defaults to False.
         slicer (slice, optional): Slice object to select specific parts of the images.
         sample_fraction (float, optional): Fraction of images to sample for calculation. Defaults to 1.0 (100% of images).
+        n_jobs (int, optional): Number of parallel workers for threaded accumulation. Defaults to 6.
+            Controls peak memory: peak ~= n_jobs x one_tile_size (not all tiles at once).
 
     Returns:
         np.ndarray: The calculated illumination correction field.
@@ -57,13 +60,14 @@ def calculate_ic_field(
 
     # Accumulate images using threading or sequential processing, averaging them
     if threading:
-        # Accumulate results in parallel and combine them
-        results = Parallel(n_jobs=-1, require="sharedmem")(
-            delayed(accumulate_image)(file, slicer, np.zeros_like(data), len(files))
+        # ponytail: stream partials so only ~n_jobs tile arrays are live at once.
+        # Previous list-return held all N results in memory (~4 TiB for 14k tiles).
+        results = Parallel(n_jobs=n_jobs, require="sharedmem", return_as="generator")(
+            delayed(_read_scaled)(file, slicer, len(files))
             for file in files[1:]
         )
         for result in results:
-            data += result  # Aggregate results from parallel processing
+            data += result
     else:
         for file in files[1:]:
             data = accumulate_image(file, slicer, data, len(files))
@@ -172,6 +176,11 @@ def applyIJ_parallel(f, arr, n_jobs=-2, backend="threading", *args, **kwargs):
 
     output_shape = arr.shape[:-2] + arr_[0].shape
     return np.array(arr_).reshape(output_shape)
+
+
+def _read_scaled(file: str, slicer: slice, N: int) -> np.ndarray:
+    """Read one image, slice, and scale by 1/N for streamed IC accumulation."""
+    return read_image(file)[slicer] / N
 
 
 def accumulate_image(file: str, slicer: slice, data: np.ndarray, N: int) -> np.ndarray:
