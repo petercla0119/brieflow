@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -93,7 +94,7 @@ def preprocess_phen_ic_path(pp_fp, fmt, plate, well):
 # Parallel execution helper
 # ---------------------------------------------------------------------------
 
-def run_parallel(tasks, fn, workers, label):
+def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -101,7 +102,7 @@ def run_parallel(tasks, fn, workers, label):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    with ProcessPoolExecutor(max_workers=workers, initializer=initializer, initargs=initargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -117,6 +118,16 @@ def run_parallel(tasks, fn, workers, label):
                 print(f"    [{total}/{n}] {time.time() - t0:.0f}s  new={ok} skip={skip} err={err}")
     print(f"  {label}: done in {time.time() - t0:.1f}s")
     return err
+
+
+# ---------------------------------------------------------------------------
+# GPU worker initializer
+# ---------------------------------------------------------------------------
+
+def _worker_init_gpu(num_gpus, omp_threads=4):
+    """Worker initializer for GPU steps. Pins worker to a GPU via pid hash."""
+    os.environ["OMP_NUM_THREADS"] = str(omp_threads)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(os.getpid() % num_gpus)
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +413,23 @@ def process_phenotype(config, args):
     errs += run_parallel(tasks, _align_one, w, "Align phenotype")
 
     # --- Step 3: Segment ---
-    seg_workers = 1 if seg_params.get("gpu", False) else min(w, 16)
+    seg_gpus = args.seg_gpus
+    if args.gpu and seg_gpus > 1:
+        try:
+            import torch
+            actual = torch.cuda.device_count()
+            if actual < seg_gpus:
+                print(f"  WARN: --seg-gpus {seg_gpus} but only {actual} GPU(s) detected, clamping")
+                seg_gpus = max(1, actual)
+        except Exception:
+            pass
+    if args.seg_workers:
+        seg_workers = args.seg_workers
+    elif args.gpu:
+        seg_workers = seg_gpus
+    else:
+        seg_workers = min(w, 16)
+    seg_init = (_worker_init_gpu, (seg_gpus,)) if args.gpu and seg_gpus > 1 else (None, ())
     tasks = []
     for _, r in segment_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
@@ -411,7 +438,8 @@ def process_phenotype(config, args):
         c_out = phen_img_path(phen_fp, fmt, p, we, ti, "cells", subdirectory="labels")
         s_out = phen_data_path(phen_fp, fmt, p, we, ti, "segmentation_stats", "tsv")
         tasks.append((inp, n_out, c_out, s_out, seg_params))
-    errs += run_parallel(tasks, _segment_one, seg_workers, "Segment phenotype")
+    errs += run_parallel(tasks, _segment_one, seg_workers, "Segment phenotype",
+                         initializer=seg_init[0], initargs=seg_init[1])
 
     # --- Step 4: Identify cytoplasm ---
     tasks = []
@@ -622,6 +650,10 @@ def main():
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--plate-filter", type=int, default=None)
     p.add_argument("--gpu", action="store_true", help="Enable GPU for cellpose segmentation")
+    p.add_argument("--seg-gpus", type=int, default=1,
+                   help="Number of GPUs for segmentation (default: 1)")
+    p.add_argument("--seg-workers", type=int, default=None,
+                   help="Workers for segmentation step (default: seg-gpus if --gpu, else --workers)")
     p.add_argument("--step", choices=["pre-seg", "segment", "post-seg", "all"], default="all",
                    help="pre-seg=IC+align (CPU), segment=cellpose (GPU), post-seg=extract+combine (CPU), all=everything")
     args = p.parse_args()
@@ -632,8 +664,9 @@ def main():
     fmt = config.get("all", {}).get("image_format", "tiff")
 
     print(f"{'#' * 60}")
-    print(f"  Direct Phenotype Runner | format={fmt}")
+    print(f"  Direct Phenotype Runner | format={fmt} gpu={args.gpu} step={args.step}")
     print(f"  config={args.config} workers={args.workers} max_tiles={args.max_tiles or 'all'}")
+    print(f"  seg_gpus={args.seg_gpus} seg_workers={args.seg_workers or 'auto'}")
     print(f"{'#' * 60}")
 
     t0 = time.time()
