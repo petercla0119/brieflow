@@ -94,7 +94,7 @@ SBS_OUTPUT_MAPPINGS = {
     "compute_standard_deviation": _sbs_img_temp,
     "find_peaks": _sbs_img_temp,
     "max_filter": _sbs_img_temp,
-    "apply_ic_field_sbs": _sbs_img_temp,
+    "apply_ic_field_sbs": None,  # ponytail: keep on disk to avoid re-running before segment_sbs
     "segment_sbs": [_sbs_label_keep, _sbs_label_keep, None],
     "extract_bases": None,
     "call_reads": None,
