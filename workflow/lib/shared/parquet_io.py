@@ -67,7 +67,7 @@ def read_parquets(
 
     if _HAS_POLARS:
         try:
-            lf = pl.scan_parquet(paths)
+            lf = pl.scan_parquet(paths, missing_columns="insert")
             if columns is not None:
                 lf = lf.select(columns)
             return lf.collect().to_pandas()
