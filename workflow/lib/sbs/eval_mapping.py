@@ -220,6 +220,15 @@ def plot_read_mapping_heatmap(
         .drop(columns="mapped")
     )
 
+    if df_summary.empty:
+        # 0% mapping: all well/tile groups had zero mapped reads; produce placeholder figure
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        ax.text(0.5, 0.5, "0% of reads mapped to library barcodes",
+                ha="center", va="center", fontsize=14, transform=ax.transAxes)
+        ax.axis("off")
+        return (df_summary, fig) if return_summary else fig
+
     if return_summary and return_plot:
         fig, _ = plot_plate_heatmap(df_summary, metadata=metadata, **kwargs)
         return df_summary, fig
