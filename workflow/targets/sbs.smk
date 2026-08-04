@@ -90,10 +90,10 @@ _sbs_label_keep = directory if SBS_IMG_FMT == "zarr" else None
 
 SBS_OUTPUT_MAPPINGS = {
     "align_sbs": None,  # ponytail: keep on disk so apply_ic_field_sbs is never considered stale
-    "log_filter": _sbs_img_temp,
-    "compute_standard_deviation": _sbs_img_temp,
-    "find_peaks": _sbs_img_temp,
-    "max_filter": _sbs_img_temp,
+    "log_filter": None,  # ponytail: keep pre-seg intermediate on disk (was temp) — avoids per-tile recompute sawtooth
+    "compute_standard_deviation": None,  # ponytail: keep pre-seg intermediate on disk (was temp) — avoids per-tile recompute sawtooth
+    "find_peaks": None,  # ponytail: keep pre-seg intermediate on disk (was temp) — avoids per-tile recompute sawtooth
+    "max_filter": None,  # ponytail: keep pre-seg intermediate on disk (was temp) — avoids per-tile recompute sawtooth
     "apply_ic_field_sbs": None,  # ponytail: keep on disk to avoid re-running before segment_sbs
     "segment_sbs": [_sbs_label_keep, _sbs_label_keep, None],
     "extract_bases": None,
