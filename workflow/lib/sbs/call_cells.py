@@ -6,6 +6,7 @@ Supports single-barcode and multi-barcode protocols with per-barcode quality tra
 import pandas as pd
 import numpy as np
 import Levenshtein
+from functools import lru_cache
 
 from lib.sbs.constants import (
     PREFIX,
@@ -28,6 +29,21 @@ from lib.sbs.constants import (
 )
 
 COLS = [WELL, TILE, CELL]
+
+
+@lru_cache(maxsize=2)
+def _read_barcode_library_cached(fp, sep="\t"):
+    """Parse a barcode-library TSV once per worker process (keyed on path)."""
+    return pd.read_csv(fp, sep=sep)
+
+
+def load_barcode_library(fp, sep="\t"):
+    """Load a barcode library, reusing a per-process parsed cache.
+
+    Returns a fresh copy each call so callers may mutate the frame
+    without corrupting the cache.
+    """
+    return _read_barcode_library_cached(fp, sep).copy()
 
 
 def call_cells(
@@ -521,38 +537,34 @@ def error_correct_reads(reads, reference, max_distance=2, distance_metric="hammi
     """Error correct reads against a reference set of barcodes.
 
     Only corrects when there is a unique closest match within max_distance.
-
-    Args:
-        reads: Series with reads to correct.
-        reference: Series with reference barcodes.
-        max_distance: Maximum edit distance for correction.
-        distance_metric: "hamming" or "levenshtein".
-
-    Returns:
-        Series with corrected reads.
+    Deduplicates reads and skips exact library matches before the O(N*M)
+    distance computation.
     """
-    dist_to_ref = _barcode_distance_matrix(
-        reads.to_list(),
-        reference.to_list(),
-        distance_metric=distance_metric,
-    )
+    reference_list = reference.to_list()
+    reference_set = set(reference_list)
 
-    min_dist_to_ref = dist_to_ref.min(axis=1)
-    unique_dist = np.array(
-        [
-            np.sum(dist_to_ref[x] == min_dist_to_ref[x]) == 1
-            for x in range(dist_to_ref.shape[0])
-        ]
-    )
+    unique_reads = pd.unique(reads)
+    correction = {r: r for r in unique_reads}
 
-    corrected_subset = unique_dist & (min_dist_to_ref <= max_distance)
-    corrected_barcodes = reference.loc[
-        dist_to_ref[corrected_subset].argmin(axis=1)
-    ].values
+    unmapped = [r for r in unique_reads if r not in reference_set]
 
-    corrected_reads = reads.copy()
-    corrected_reads.loc[corrected_subset] = corrected_barcodes
-    return corrected_reads
+    if unmapped:
+        dist_to_ref = _barcode_distance_matrix(
+            unmapped,
+            reference_list,
+            distance_metric=distance_metric,
+        )
+        min_dist = dist_to_ref.min(axis=1)
+        unique_min = np.array(
+            [np.sum(dist_to_ref[i] == min_dist[i]) == 1 for i in range(dist_to_ref.shape[0])]
+        )
+        do_correct = unique_min & (min_dist <= max_distance)
+        argmins = dist_to_ref.argmin(axis=1)
+        for i, bc in enumerate(unmapped):
+            if do_correct[i]:
+                correction[bc] = reference_list[argmins[i]]
+
+    return reads.map(correction)
 
 
 def _barcode_distance_matrix(barcodes_1, barcodes_2=False, distance_metric="hamming"):

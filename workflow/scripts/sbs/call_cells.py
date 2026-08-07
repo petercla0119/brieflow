@@ -5,7 +5,7 @@ Supports both single-barcode and multi-barcode protocols.
 
 import pandas as pd
 
-from lib.sbs.call_cells import call_cells
+from lib.sbs.call_cells import call_cells, load_barcode_library
 
 # Get configuration from params
 params = snakemake.params.config
