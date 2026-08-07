@@ -369,7 +369,7 @@ def _call_cells_one(task):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         from lib.sbs.call_cells import call_cells, load_barcode_library
         reads = pd.read_csv(reads_path, sep="\t")
-        barcode_lib = pd.read_csv(cc_params["df_barcode_library_fp"], sep="\t")
+        barcode_lib = load_barcode_library(cc_params["df_barcode_library_fp"])
         barcode_type = cc_params.get("barcode_type", "simple")
 
         if barcode_type == "multi":

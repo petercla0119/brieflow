@@ -14,7 +14,7 @@ params = snakemake.params.config
 reads_data = pd.read_csv(snakemake.input[0], sep="\t")
 
 # Load barcode library
-df_barcode_library = pd.read_csv(params["df_barcode_library_fp"], sep="\t")
+df_barcode_library = load_barcode_library(params["df_barcode_library_fp"])
 
 # Choose calling method based on barcode_type parameter
 barcode_type = params.get("barcode_type", "simple")
