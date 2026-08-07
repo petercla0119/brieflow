@@ -38,6 +38,9 @@ def test_extract_phenotype_output_is_parquet():
     per_tile_parquets = list(phenotype_dir.glob("parquets/**/*__phenotype_cp.parquet"))
     stale_tsvs = list(phenotype_dir.glob("tsvs/**/*__phenotype_cp.tsv"))
 
+    if not per_tile_parquets and not stale_tsvs:
+        pytest.skip("No per-tile phenotype outputs found. Run run_brieflow.sh first.")
+
     assert len(per_tile_parquets) >= 1, (
         "No per-tile phenotype_cp.parquet found under phenotype/parquets/; "
         "TSV→parquet migration may not have run."
