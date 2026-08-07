@@ -17,6 +17,7 @@ from lib.sbs.call_cells import (
     _read_barcode_library_cached,
     error_correct_reads,
     _barcode_distance_matrix,
+    _build_hamming1_index,
     call_cells,
 )
 
@@ -96,7 +97,7 @@ def _make_ref(*barcodes):
 
 
 def test_dedup_runs_levenshtein_once_per_unique():
-    """50 identical unmapped reads → distance matrix built with exactly 1 row."""
+    """50 identical unmapped reads → distance matrix built with exactly 1 row (slow path, max_distance=2)."""
     ref = _make_ref("AAAAAAAAAAAA")
     reads = pd.Series(["GGGGGGGGGGGG"] * 50)
 
@@ -108,7 +109,7 @@ def test_dedup_runs_levenshtein_once_per_unique():
         return original(bc1, bc2, **kw)
 
     with patch("lib.sbs.call_cells._barcode_distance_matrix", side_effect=spy_matrix):
-        error_correct_reads(reads, ref, max_distance=0)
+        error_correct_reads(reads, ref, max_distance=2)
 
     assert len(matrix_shapes) == 1
     assert matrix_shapes[0] == 1, f"Expected 1 unique unmapped row, got {matrix_shapes[0]}"
@@ -217,3 +218,22 @@ def test_cells_output_matches_golden(tile, barcode_lib_df):
 
     for col in golden_s.columns:
         _assert_series_match(result_s[col], golden_s[col], col)
+
+def test_hamming1_index_used_for_production_config(monkeypatch):
+    """Fast path (precomputed index) fires for max_distance=1, metric=hamming."""
+    called = {"n": 0}
+    import lib.sbs.call_cells as ccmod
+    real_build = ccmod._build_hamming1_index
+
+    def spy(*a, **k):
+        called["n"] += 1
+        return real_build(*a, **k)
+
+    monkeypatch.setattr(ccmod, "_build_hamming1_index", spy)
+
+    reference = pd.Series(["AAAAAAAAAAAA", "CCCCCCCCCCCC"])
+    reads = pd.Series(["AAAAAAAAAAAC", "AAAAAAAAAAAA"])
+    out = error_correct_reads(reads, reference, max_distance=1, distance_metric="hamming")
+    assert called["n"] >= 1, "index builder must be called"
+    assert out.iloc[0] == "AAAAAAAAAAAA"  # corrected
+    assert out.iloc[1] == "AAAAAAAAAAAA"  # exact match
