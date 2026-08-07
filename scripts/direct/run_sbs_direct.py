@@ -21,7 +21,7 @@ import pandas as pd
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "brieflow" / "workflow"))
+sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 
 from lib.shared.file_utils import get_data_output_path, get_image_output_path, validate_dtypes
 from lib.shared.image_io import read_image, save_image
