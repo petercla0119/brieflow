@@ -79,8 +79,9 @@ pydocstyle = { convention = "google" }
 "workflow/lib/external/*.py" = ["ALL"]
 # Ignore all checks for docs
 "docs/source/*.py" = ["ALL"]
-# Ignore all checks for tests
+# Ignore all checks for tests (including unit/ and integration/ subdirs)
 "tests/*.py" = ["ALL"]
+"tests/**/*.py" = ["ALL"]
 # Visualization code
 "visualization/*.py" = ["ALL"]
 
