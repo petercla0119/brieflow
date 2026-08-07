@@ -19,6 +19,7 @@ IMG_FMT = config.get("all", {}).get("image_format", "tiff")
 #     row="[A-Za-z]+",
 #     col="[0-9]+",
 wildcard_constraints:
+    well=r"[A-Z][0-9]+",
     row=r"[A-Za-z]+",
     col=r"[0-9]+",
     tile=r"[0-9]+",
