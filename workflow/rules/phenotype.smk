@@ -144,6 +144,7 @@ rule merge_phenotype:
     resources:
         mem_mb=8000,   # tune: holds full well phenotype_cp
         runtime=20,    # minutes
+    # thread-cap: polars uses POLARS_MAX_THREADS (not OMP); set POLARS_MAX_THREADS={threads} in cluster profile
     benchmark:
         PHENOTYPE_FP / "benchmarks" / get_data_output_path(_well, "merge_phenotype", "tsv", PHENOTYPE_IMG_FMT)
     script:
