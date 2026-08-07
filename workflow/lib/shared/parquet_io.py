@@ -71,8 +71,8 @@ def read_parquets(
             if columns is not None:
                 lf = lf.select(columns)
             return lf.collect().to_pandas()
-        except pl.exceptions.SchemaError:
-            # Schema mismatch across files — fall back to per-file reads
+        except (pl.exceptions.SchemaError, pl.exceptions.ComputeError):
+            # Schema/type mismatch across files — fall back to per-file reads
             dfs = [read_parquet(p, columns=columns) for p in paths]
             return pd.concat(dfs, ignore_index=True)
     else:
