@@ -72,6 +72,12 @@ if merge_approach == "fast":
             det_range=config.get("merge", {}).get("det_range"),
             score=config.get("merge", {}).get("score"),
             threshold=config.get("merge", {}).get("threshold"),
+        threads: 1
+        resources:
+            mem_mb=8000,  # tune: holds full well phenotype+sbs info
+            runtime=20,   # minutes
+        benchmark:
+            MERGE_FP / "benchmarks" / get_filename({"plate": "{plate}", "well": "{well}"}, "fast_merge", "tsv")
         script:
             "../scripts/merge/fast_merge.py"
 
