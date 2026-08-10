@@ -100,26 +100,32 @@ def channel_combo_subset(features, channel_combo, all_channels):
 
     Args:
         features (pd.DataFrame): DataFrame containing feature data.
-        channel_combo (list): List of channels to include.
+        channel_combo (list | str): List of channels to include, or "all" to
+            keep every column.
         all_channels (list): List of all available channels.
 
     Returns:
         pd.DataFrame: DataFrame with features filtered to include only
             columns from the specified channel combination.
     """
-    # Find channels to remove (those not in channel_combo)
-    channels_to_remove = [ch for ch in all_channels if ch not in channel_combo]
+    if channel_combo == "all" or tuple(channel_combo) == ("all",):
+        return features
 
-    # Get all column names
-    columns = features.columns.tolist()
+    keep_channels = list(channel_combo)
+    # Longest names first so e.g. "DAPI_round2" matches before "DAPI"
+    all_sorted = sorted(all_channels, key=len, reverse=True)
 
-    # Find columns to remove (those containing removed channel names)
-    columns_to_remove = [
-        col for col in columns if any(ch in col for ch in channels_to_remove)
+    def channel_of(col):
+        for ch in all_sorted:
+            if f"_{ch}_" in col or col.endswith(f"_{ch}"):
+                return ch
+        return None  # channel-agnostic features (shape, etc.) — keep always
+
+    columns_to_keep = [
+        col
+        for col in features.columns
+        if channel_of(col) is None or channel_of(col) in keep_channels
     ]
-
-    # Keep all columns except those from removed channels
-    columns_to_keep = [col for col in columns if col not in columns_to_remove]
 
     return features[columns_to_keep]
 
