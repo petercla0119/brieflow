@@ -36,6 +36,7 @@ def extract_phenotype_cp_emulator(
     cytoplasm_channels="all",
     foci_channel=None,
     channel_names=["dapi", "tubulin", "gh2ax", "phalloidin"],
+    n_jobs=1,
 ):
     """Extract phenotype features from CellProfiler-like data with multi-channel functionality.
 
@@ -63,6 +64,10 @@ def extract_phenotype_cp_emulator(
             Default is None.
         channel_names (list, optional): List of channel names used for labeling output
             columns. Default is ["dapi", "tubulin", "gh2ax", "phalloidin"].
+        n_jobs (int, optional): Number of parallel threads for per-region feature
+            computation inside each extract_features call. Defaults to 1 (sequential,
+            tile-level parallelism model). Pass snakemake.threads to use region-level
+            parallelism instead (do not combine with a large tile pool).
 
     Returns:
         pandas.DataFrame: DataFrame containing extracted features with columns ordered as:
@@ -141,6 +146,7 @@ def extract_phenotype_cp_emulator(
             dict(),
             features,
             multichannel=True,
+            n_jobs=n_jobs,
         )
         .rename(columns=nucleus_columns)
         .set_index("label")
@@ -157,6 +163,7 @@ def extract_phenotype_cp_emulator(
                 dict(),
                 features,
                 multichannel=True,
+                n_jobs=n_jobs,
             )
             .rename(columns=cell_columns)
             .set_index("label")
@@ -173,6 +180,7 @@ def extract_phenotype_cp_emulator(
                 dict(),
                 features,
                 multichannel=True,
+                n_jobs=n_jobs,
             )
             .rename(columns=cytoplasmic_columns)
             .set_index("label")
@@ -225,7 +233,9 @@ def extract_phenotype_cp_emulator(
 
     # Add wildcards metadata at the END (they'll be reordered later)
     for k, v in sorted(wildcards.items()):
-        result_df[k] = v
+        # wildcards are strings; plate/tile must stay int so parquet-preserved
+        # dtypes match the int64 'tile' in metadata merges (old TSV read_csv coerced implicitly)
+        result_df[k] = int(v) if k in ("plate", "tile") else v
 
     # Apply column ordering
     result_df = order_dataframe_columns(result_df)

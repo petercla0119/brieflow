@@ -45,7 +45,7 @@ PHENOTYPE_OUTPUTS = {
         PHENOTYPE_FP / "parquets" / get_data_output_path(_well, "phenotype_info", "parquet", PHENOTYPE_IMG_FMT),
     ],
     "extract_phenotype": [
-        PHENOTYPE_FP / "tsvs" / get_data_output_path(_tile, "phenotype_cp", "tsv", PHENOTYPE_IMG_FMT),
+        PHENOTYPE_FP / "parquets" / get_data_output_path(_tile, "phenotype_cp", "parquet", PHENOTYPE_IMG_FMT),
     ],
     "merge_phenotype": [
         PHENOTYPE_FP / "parquets" / get_data_output_path(_well, "phenotype_cp", "parquet", PHENOTYPE_IMG_FMT),
