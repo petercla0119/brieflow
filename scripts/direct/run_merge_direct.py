@@ -326,93 +326,21 @@ def step_deduplicate_merge(cfg, paths, force):
 
 
 def step_final_merge(cfg, paths, force):
-    import numpy as np
-    import pyarrow as pa
-    import pyarrow.parquet as pq
+    from lib.merge.final_merge import final_merge
 
     if paths.merge_final.exists() and not force:
         log(f"skip final_merge (exists): {paths.merge_final}")
         return
 
-    approach = cfg.get("approach", "fast")
-    exclude_markers = cfg.get("exclude_markers") or []
-    KEYS = ["plate", "well", "tile", "cell_0"]
-    BATCH = 250_000
-
-    # left side: dedup fully in memory (~1.2 GB, small)
-    dedup = validate_dtypes(read_parquet(paths.merge_deduplicated)).reset_index(drop=True)
-    if approach == "stitch":
-        dedup = dedup.rename(columns={
-            "i_0": "global_i_0", "j_0": "global_j_0",
-            "i_1": "global_i_1", "j_1": "global_j_1"})
-    dedup["__idx__"] = np.arange(len(dedup), dtype=np.int64)
-    matched = np.zeros(len(dedup), dtype=bool)
-    n_tiles = dedup["tile"].nunique()
-    log(f"final_merge: streaming CP for {n_tiles} tiles from {paths.ph_cp_full}")
-
-    # determine which CP columns to read (drop excluded markers) - metadata only, no data load
-    cp_schema = pq.read_schema(paths.ph_cp_full)
-    cp_names = list(cp_schema.names)
-    drop_cols = {c for c in cp_names if any(f"_{m}_" in c for m in exclude_markers)}
-    if drop_cols:
-        log(f"final_merge: dropping {len(drop_cols)} CP cols for excluded markers {exclude_markers}")
-    keep_cp = [c for c in cp_names if c not in drop_cols]
-
-    # output column order: dedup cols (minus __idx__) then CP feature cols (label->cell_0)
-    dedup_out_cols = [c for c in dedup.columns if c != "__idx__"]
-    cp_out_cols = [("cell_0" if c == "label" else c)
-                   for c in keep_cp if c not in ("plate", "well", "tile", "label")]
-    OUT_COLS = dedup_out_cols + cp_out_cols
-
-    paths.merge_final.parent.mkdir(parents=True, exist_ok=True)
-    # ponytail: open writer lazily on first batch so schema is inferred from real data,
-    # not from head(0) which mistyps object/nullable cols (e.g. mapped_single_gene -> null)
-    writer = None
-    n_written = 0
-
-    def _append(df):
-        nonlocal writer, n_written
-        # cast CP cols to float64 in pandas so schema is stable across batches
-        # (int cols become float when NaN appears in unmatched rows)
-        for c in cp_out_cols:
-            if c in df.columns:
-                df[c] = df[c].astype("float64")
-        tbl = pa.Table.from_pandas(df[OUT_COLS], preserve_index=False)
-        if writer is None:
-            writer = pq.ParquetWriter(str(paths.merge_final), tbl.schema)
-        writer.write_table(tbl)
-        n_written += len(df)
-
-    # single streaming pass over phenotype_cp - reads the 790GB file exactly once
-    pf = pq.ParquetFile(paths.ph_cp_full)
-    for batch_num, rb in enumerate(pf.iter_batches(batch_size=BATCH, columns=keep_cp)):
-        cp_batch = rb.to_pandas().rename(columns={"label": "cell_0"})
-        for k in KEYS:
-            if k in cp_batch.columns:
-                cp_batch[k] = cp_batch[k].astype(dedup[k].dtype)
-        m = dedup.merge(cp_batch, how="inner", on=KEYS, copy=False)
-        if len(m):
-            matched[m["__idx__"].to_numpy()] = True
-            _append(m)
-        if (batch_num + 1) % 10 == 0:
-            log(f"final_merge: {batch_num + 1} batches processed, {n_written} rows written")
-
-    # emit unmatched dedup rows (LEFT-join: CP cols = NaN), chunked
-    un_idx = np.where(~matched)[0]
-    if len(un_idx):
-        log(f"final_merge: writing {len(un_idx)} unmatched dedup rows (no CP match)")
-        for s in range(0, len(un_idx), BATCH):
-            chunk = dedup.iloc[un_idx[s:s + BATCH]][dedup_out_cols].copy()
-            for c in cp_out_cols:
-                chunk[c] = np.nan
-            _append(chunk)
-
-    if writer is not None:
-        writer.close()
-    log(f"final_merge: wrote {n_written} rows x {len(OUT_COLS)} cols -> {paths.merge_final}")
-    genes = dedup.get("gene_symbol_0")
-    log(f"final_merge: cells with gene_symbol_0={int(genes.notna().sum()) if genes is not None else 'NA'}")
-
+    log(f"final_merge: polars streaming left join of CP -> {paths.merge_final}")
+    final_merge(
+        deduplicated_path=paths.merge_deduplicated,
+        phenotype_cp_path=paths.ph_cp_full,
+        output_path=paths.merge_final,
+        approach=cfg.get("approach", "fast"),
+        exclude_markers=cfg.get("exclude_markers"),
+    )
+    log(f"final_merge: done -> {paths.merge_final}")
 
 
 def run_well(cfg, out_root, plate, well, workers, force):
