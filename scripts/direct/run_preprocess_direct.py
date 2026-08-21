@@ -333,6 +333,8 @@ def process(image_type, config, args):
     print(f"\n  IC fields ({image_type})...")
     group_cols = ["plate", "well", "cycle"] if has_cycle else ["plate", "well"]
     sample_frac = pp.get("sample_fraction", 1)
+    ic_smooth = pp.get("ic_smooth", None)
+    ic_seed = pp.get("ic_random_seed", None)
 
     for gk, gdf in combos.groupby(group_cols):
         plate, well = str(gk[0]), str(gk[1])
@@ -363,7 +365,10 @@ def process(image_type, config, args):
         Path(ic_out).parent.mkdir(parents=True, exist_ok=True)
         try:
             t0 = time.time()
-            field = calculate_ic_field(inputs, threading=True, sample_fraction=sample_frac)
+            field = calculate_ic_field(
+                inputs, threading=True, sample_fraction=sample_frac,
+                smooth=ic_smooth, random_seed=ic_seed, n_jobs=args.workers,
+            )
             save_image(field, ic_out)
             print(f"    OK IC {tag} ({time.time() - t0:.1f}s, {len(inputs)} tiles)")
         except Exception as e:
