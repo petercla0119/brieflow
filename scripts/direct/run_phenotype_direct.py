@@ -69,6 +69,16 @@ def out_exists(path):
     return p.exists() and p.stat().st_size > 0
 
 
+def atomic_write_parquet(df, path):
+    """Write to a sibling .tmp then os.replace — atomic on same fs, so a crash
+    mid-write never leaves a size>0 partial that the out_exists() skip guard trusts."""
+    path = str(path)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    write_parquet(df, tmp)
+    os.replace(tmp, path)
+
+
 def phen_img_path(phen_fp, fmt, plate, well, tile, info_type, subdirectory=None):
     loc = make_loc(fmt, plate, well, tile)
     return str(phen_fp / get_image_output_path(loc, info_type, fmt, subdirectory=subdirectory))
@@ -347,6 +357,69 @@ def _extract_phenotype_one(task):
 
 
 # ---------------------------------------------------------------------------
+# Memory-aware merge concurrency
+# ---------------------------------------------------------------------------
+
+WELL_PEAK_GB = 70  # measured ~66 GB read+concat peak per well; round up for headroom
+
+
+def _available_gb():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1e6  # kB -> GB
+    except Exception:
+        pass
+    return None
+
+
+def _merge_worker_cap(requested):
+    """merge holds a full well (~66 GB peak) in RAM; size concurrency by memory, not
+    cores. Running 6 wells in parallel OOM-killed a 173 GB box (2026-08-08)."""
+    avail = _available_gb()
+    mem_cap = max(1, int(avail // WELL_PEAK_GB)) if avail else 2
+    return max(1, min(requested, mem_cap))
+
+
+def _merge_well_one(task):
+    """Per-well merge worker: concat per-tile phenotype_cp TSVs -> full + min parquet."""
+    plate, well, tiles, phen_fp, fmt, channel_names, prefix = task
+    phen_fp = Path(phen_fp)
+    tag = f"P{plate}/W{well}"
+    out_full = phen_well_path(phen_fp, fmt, plate, well, "phenotype_cp", "parquet")
+    out_min = phen_well_path(phen_fp, fmt, plate, well, "phenotype_cp_min", "parquet")
+    if out_exists(out_full) and out_exists(out_min):
+        return "skip", tag
+    try:
+        input_paths = [
+            phen_data_path(phen_fp, fmt, plate, well, str(t), "phenotype_cp", "tsv")
+            for t in tiles
+        ]
+        dfs = []
+        for f in input_paths:
+            try:
+                dfs.append(pd.read_csv(f, sep="\t"))
+            except Exception:
+                pass
+        if not dfs:
+            return "err", f"{tag}: no inputs"
+
+        phenotype_cp = pd.concat(dfs, ignore_index=True)
+        atomic_write_parquet(phenotype_cp, out_full)
+
+        bounds_features = [f"{prefix}_bounds_{i}" for i in range(4)]
+        channel_min_features = [f"{prefix}_{ch}_min" for ch in channel_names]
+        min_cols = ["plate", "well", "tile", "label", f"{prefix}_i", f"{prefix}_j"]
+        min_cols.extend(bounds_features + channel_min_features)
+        available = [c for c in min_cols if c in phenotype_cp.columns]
+        atomic_write_parquet(phenotype_cp[available], out_min)
+        return "ok", f"{tag} ({len(phenotype_cp)} rows)"
+    except Exception as e:
+        return "err", f"{tag}: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Main processing
 # ---------------------------------------------------------------------------
 
@@ -363,6 +436,13 @@ def process_phenotype(config, args):
 
     if args.plate_filter:
         combos = combos[combos["plate"] == str(args.plate_filter)]
+
+    if (getattr(args, "tile_start", None) is not None
+            or getattr(args, "tile_end", None) is not None) and "tile" in combos.columns:
+        tiles = sorted(combos["tile"].unique(), key=lambda x: int(x))
+        start = args.tile_start or 0
+        end = args.tile_end if args.tile_end is not None else len(tiles)
+        combos = combos[combos["tile"].isin(set(tiles[start:end]))]
 
     if args.max_tiles and "tile" in combos.columns:
         tiles = sorted(combos["tile"].unique(), key=lambda x: int(x))
@@ -515,46 +595,20 @@ def process_phenotype(config, args):
 
         combined = pd.concat(dfs, ignore_index=True)
         combined = validate_dtypes(combined)
-        Path(out).parent.mkdir(parents=True, exist_ok=True)
-        write_parquet(combined, out)
+        atomic_write_parquet(combined, out)
         print(f"    OK combine phenotype_info P{plate}/W{well} ({len(combined)} rows)")
 
     # --- Step 8: Merge phenotype (per well) ---
-    print(f"\n  Merge phenotype per well...")
+    # merge is memory-bound (~66 GB peak per well): parallelize across wells but cap
+    # concurrency by available RAM, not cores (6 parallel wells OOM-killed a 173 GB box).
     prefix = "cell" if segment_cells else "nucleus"
-    for (plate, well), gdf in post_seg_tc.groupby(["plate", "well"]):
-        out_full = phen_well_path(phen_fp, fmt, plate, well, "phenotype_cp", "parquet")
-        out_min = phen_well_path(phen_fp, fmt, plate, well, "phenotype_cp_min", "parquet")
-        if out_exists(out_full) and out_exists(out_min):
-            print(f"    SKIP merge phenotype P{plate}/W{well}")
-            continue
-
-        input_paths = [
-            phen_data_path(phen_fp, fmt, plate, well, str(tr["tile"]), "phenotype_cp", "tsv")
-            for _, tr in gdf.iterrows()
-        ]
-        dfs = []
-        for f in input_paths:
-            try:
-                dfs.append(pd.read_csv(f, sep="\t"))
-            except Exception:
-                pass
-        if not dfs:
-            print(f"    WARN merge phenotype P{plate}/W{well}: no inputs")
-            continue
-
-        phenotype_cp = pd.concat(dfs, ignore_index=True)
-        Path(out_full).parent.mkdir(parents=True, exist_ok=True)
-        write_parquet(phenotype_cp, out_full)
-
-        bounds_features = [f"{prefix}_bounds_{i}" for i in range(4)]
-        channel_min_features = [f"{prefix}_{ch}_min" for ch in channel_names]
-        min_cols = ["plate", "well", "tile", "label", f"{prefix}_i", f"{prefix}_j"]
-        min_cols.extend(bounds_features + channel_min_features)
-        available = [c for c in min_cols if c in phenotype_cp.columns]
-        phenotype_cp_min = phenotype_cp[available]
-        write_parquet(phenotype_cp_min, out_min)
-        print(f"    OK merge phenotype P{plate}/W{well} ({len(phenotype_cp)} rows)")
+    merge_tasks = [
+        (plate, well, list(gdf["tile"]), str(phen_fp), fmt, channel_names, prefix)
+        for (plate, well), gdf in post_seg_tc.groupby(["plate", "well"])
+    ]
+    merge_workers = _merge_worker_cap(w)
+    print(f"\n  Merge phenotype per well (concurrency={merge_workers}, ~{WELL_PEAK_GB} GB/well)...")
+    errs += run_parallel(merge_tasks, _merge_well_one, merge_workers, "Merge phenotype")
 
     # --- Step 9: Eval segmentation (per plate) ---
     print(f"\n  Eval per plate...")
@@ -660,6 +714,9 @@ def main():
     p.add_argument("--max-tiles", type=int, default=None)
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--plate-filter", type=int, default=None)
+    p.add_argument("--tile-start", type=int, default=None,
+                   help="Slice tiles to [start:end] by sorted tile index (for sharding a well)")
+    p.add_argument("--tile-end", type=int, default=None)
     p.add_argument("--gpu", action="store_true", help="Enable GPU for cellpose segmentation")
     p.add_argument("--seg-gpus", type=int, default=1,
                    help="Number of GPUs for segmentation (default: 1)")
