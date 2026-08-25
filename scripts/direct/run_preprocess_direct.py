@@ -20,9 +20,9 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-# brieflow library: ../../brieflow/workflow relative to this script's location
+# brieflow library: ../../workflow relative to this script's location
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "brieflow" / "workflow"))
+sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 
 from lib.preprocess.preprocess import convert_to_array, extract_metadata, get_data_config
 from lib.preprocess.file_utils import get_metadata_wildcard_combos, get_sample_fps
