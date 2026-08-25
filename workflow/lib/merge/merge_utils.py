@@ -733,3 +733,12 @@ def fast_merge_example(
     except Exception as e:
         print(f"  Error plotting: {str(e)}")
         return False
+
+
+def filter_low_score_seeds(df, min_keep=5):
+    if len(df) <= min_keep:
+        return df
+    q1, q3 = df["score"].quantile([0.25, 0.75])
+    cutoff = q1 - 1.5 * (q3 - q1)
+    filtered = df[df["score"] >= cutoff]
+    return filtered if len(filtered) >= min_keep else df.nlargest(min_keep, "score")
