@@ -31,6 +31,7 @@ sys.path.insert(0, str(_WORKFLOW / "lib"))
 sys.path.insert(0, str(_WORKFLOW))
 
 from lib.shared.file_utils import validate_dtypes  # noqa: E402
+from lib.shared.resource_monitor import monitor_step, set_benchmark_context  # noqa: E402
 from lib.shared.parquet_io import read_parquet, write_parquet  # noqa: E402
 from lib.merge.hash import (  # noqa: E402
     hash_cell_locations,
@@ -347,11 +348,16 @@ def run_well(cfg, out_root, plate, well, workers, force):
     log(f"===== MERGE well plate={plate} well={well} =====")
     paths = Paths(out_root, plate, well)
     _ensure_dirs(paths)
-    step_fast_alignment(cfg, paths, plate, well, workers, force)
-    step_fast_merge(cfg, paths, force)
-    step_format_merge(cfg, paths, force)
-    step_deduplicate_merge(cfg, paths, force)
-    step_final_merge(cfg, paths, force)
+    with monitor_step("fast_alignment"):
+        step_fast_alignment(cfg, paths, plate, well, workers, force)
+    with monitor_step("fast_merge"):
+        step_fast_merge(cfg, paths, force)
+    with monitor_step("format_merge"):
+        step_format_merge(cfg, paths, force)
+    with monitor_step("deduplicate_merge"):
+        step_deduplicate_merge(cfg, paths, force)
+    with monitor_step("final_merge"):
+        step_final_merge(cfg, paths, force)
     log(f"===== DONE well plate={plate} well={well} -> {paths.merge_final} =====")
 
 
@@ -372,6 +378,7 @@ def main():
     if cfg.get("approach", "fast") != "fast":
         raise SystemExit(f"run_merge_direct only implements the fast chain; config approach={cfg.get('approach')}")
     out_root = Path(config["all"]["root_fp"])
+    set_benchmark_context("merge", out_root)
 
     combo_fp = cfg.get("merge_combo_fp", "config/merge_combo.tsv")
     combos = pd.read_csv(combo_fp, sep="\t")

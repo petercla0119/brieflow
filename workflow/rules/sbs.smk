@@ -119,6 +119,8 @@ rule segment_sbs:
         config=lambda wildcards: get_segmentation_params("sbs", config),
     resources:
         gpu=1,
+    benchmark:
+        SBS_FP / "benchmarks" / get_data_output_path(_tile, "segment_sbs", "tsv", SBS_IMG_FMT)
     script:
         "../scripts/shared/segment.py"
 
