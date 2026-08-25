@@ -30,6 +30,7 @@ from lib.shared.file_utils import get_data_output_path, get_image_output_path, v
 from lib.shared.illumination_correction import calculate_ic_field
 from lib.shared.image_io import save_image
 from lib.shared.parquet_io import write_parquet
+from lib.shared.resource_monitor import monitor_step, set_benchmark_context
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,7 @@ def run_parallel(tasks, fn, workers, label):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    with monitor_step(label), ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -327,6 +328,7 @@ def process(image_type, config, args):
     ic_smooth = pp.get("ic_smooth", None)
     ic_seed = pp.get("ic_random_seed", None)
 
+    ic_mon = monitor_step(f"Calculate IC field ({image_type})").start()
     for gk, gdf in combos.groupby(group_cols):
         plate, well = str(gk[0]), str(gk[1])
         cycle = str(gk[2]) if has_cycle else None
@@ -365,6 +367,7 @@ def process(image_type, config, args):
         except Exception as e:
             print(f"    ERR IC {tag}: {e}")
             errs += 1
+    ic_mon.stop()
 
     # ------------------------------------------------------------------
     # Step 4: Combine metadata (sequential)
@@ -447,6 +450,7 @@ def main():
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
+    set_benchmark_context("preprocess", config["all"]["root_fp"])
     img_fmt = config.get("all", {}).get("image_format", "tiff")
 
     print(f"{'#' * 60}")
