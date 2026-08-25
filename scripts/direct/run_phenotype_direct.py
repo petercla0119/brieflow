@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import multiprocessing
 import os
 import re
 import sys
@@ -103,6 +104,14 @@ def preprocess_phen_ic_path(pp_fp, fmt, plate, well):
 # Parallel execution helper
 # ---------------------------------------------------------------------------
 
+# ponytail: spawn, not fork. Earlier steps (extract_phenotype etc.) spin up
+# BLAS/skimage/scipy/mahotas/numexpr threads in this parent process. Default
+# fork-based workers inherit those threads' locked mutexes with no owning
+# thread in the child -> merge workers deadlock in futex_wait (issue #5).
+# spawn gives each worker a clean interpreter with no inherited locks.
+_MP = multiprocessing.get_context("spawn")
+
+
 def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     n = len(tasks)
     if n == 0:
@@ -111,7 +120,7 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with ProcessPoolExecutor(max_workers=workers, initializer=initializer, initargs=initargs) as pool:
+    with ProcessPoolExecutor(max_workers=workers, mp_context=_MP, initializer=initializer, initargs=initargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
