@@ -108,6 +108,7 @@ for i, indices in enumerate(subset_indices):
             metadata_cols,
             snakemake.params.perturbation_name_col,
             snakemake.params.control_key,
+            minimum_cell_count=snakemake.params.ps_minimum_cell_count,
         )
 
     for col in subset_df.columns:

@@ -104,6 +104,7 @@ rule align:
         control_key=config.get("aggregate", {}).get("control_key"),
         num_align_batches=config.get("aggregate", {}).get("num_align_batches", 1),
         skip_perturbation_score=config.get("aggregate", {}).get("skip_perturbation_score", True),
+        ps_minimum_cell_count=config.get("aggregate", {}).get("ps_minimum_cell_count", 100),
         control_name_col=config.get("aggregate", {}).get("control_name_col"),
     script:
         "../scripts/aggregate/align.py"
