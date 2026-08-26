@@ -133,7 +133,7 @@ def _convert_one(task):
         return "err", f"{tag}: {e}"
 
 
-def run_parallel(tasks, fn, workers, label):
+def run_parallel(tasks, fn, workers, label, max_tasks_per_child=None):
     """Execute tasks with a process pool, reporting progress."""
     n = len(tasks)
     if n == 0:
@@ -142,7 +142,12 @@ def run_parallel(tasks, fn, workers, label):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    pool_kwargs = {"max_workers": workers}
+    if max_tasks_per_child is not None:
+        import multiprocessing as _mp
+        pool_kwargs["mp_context"] = _mp.get_context("spawn")
+        pool_kwargs["max_tasks_per_child"] = max_tasks_per_child
+    with ProcessPoolExecutor(**pool_kwargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -278,7 +283,11 @@ def process(image_type, config, args):
             out,
         ))
 
-    errs += run_parallel(tasks, _extract_one, args.workers, f"Extract metadata ({image_type})")
+    # ponytail: phenotype extract_metadata loads a whole ND2 well (~197GB RSS/well, measured);
+    # >1 concurrent worker OOMs the 251GB box (24/8/4/3/2 all OOM'd or climbed to danger).
+    # SBS wells are small (~5.6GB) so they keep full parallelism.
+    extract_workers = 1 if image_type == "phenotype" else args.workers
+    errs += run_parallel(tasks, _extract_one, extract_workers, f"Extract metadata ({image_type})", max_tasks_per_child=1)
 
     # ------------------------------------------------------------------
     # Step 2: Convert images
