@@ -153,10 +153,16 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
 # GPU worker initializer
 # ---------------------------------------------------------------------------
 
-def _worker_init_gpu(num_gpus, omp_threads=4):
-    """Worker initializer for GPU steps. Pins worker to a GPU via pid hash."""
+def _worker_init_gpu(num_gpus, counter, lock, omp_threads=4):
+    """Worker initializer for GPU steps. Pins each worker to a distinct GPU via an
+    atomic round-robin counter (spawn-safe Manager proxy): N workers map to GPUs
+    0..N-1. Replaces the old os.getpid() % num_gpus hash, which collided and left
+    GPUs idle (2026-08-27: 4 workers -> GPUs {0,2,3,3}, GPU 1 unused)."""
     os.environ["OMP_NUM_THREADS"] = str(omp_threads)
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(os.getpid() % num_gpus)
+    with lock:
+        idx = counter.value
+        counter.value = idx + 1
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(idx % num_gpus)
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +574,11 @@ def process_phenotype(config, args):
         seg_workers = seg_gpus
     else:
         seg_workers = min(w, 16)
-    seg_init = (_worker_init_gpu, (seg_gpus,)) if args.gpu and seg_gpus > 1 else (None, ())
+    if args.gpu and seg_gpus > 1:
+        _gpu_mgr = _MP.Manager()
+        seg_init = (_worker_init_gpu, (seg_gpus, _gpu_mgr.Value("i", 0), _gpu_mgr.Lock()))
+    else:
+        seg_init = (None, ())
     tasks = []
     for _, r in segment_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
