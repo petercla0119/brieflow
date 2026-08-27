@@ -17,6 +17,11 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+# Cap BLAS/OMP threads before numpy import (per-process). GPU seg workers re-raise
+# via _worker_init_gpu. See CLAUDE.md OpenBLAS/MKL rule; matches run_phenotype_direct.py.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import numpy as np
 import pandas as pd
 import yaml
@@ -647,38 +652,39 @@ def process_sbs(config, args):
         tile_combos = _all[["plate", "well", "tile"]].drop_duplicates()
 
     # --- Steps 12-14: Combine per well ---
-    print(f"\n  Combine per well...")
-    for info_type in ["reads", "cells", "sbs_info"]:
-        for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
-            out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
-            if out_exists(out):
-                print(f"    SKIP combine {info_type} P{plate}/W{well}")
-                continue
+    with monitor_step("Combine SBS"):
+        print(f"\n  Combine per well...")
+        for info_type in ["reads", "cells", "sbs_info"]:
+            for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
+                out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
+                if out_exists(out):
+                    print(f"    SKIP combine {info_type} P{plate}/W{well}")
+                    continue
 
-            input_paths = [
-                sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "tsv")
-                for _, tr in gdf.iterrows()
-            ]
-            dfs = []
-            for f in input_paths:
-                try:
-                    dfs.append(pd.read_csv(f, sep="\t"))
-                except Exception:
-                    pass
-            if not dfs:
-                print(f"    WARN combine {info_type} P{plate}/W{well}: no inputs")
-                continue
+                input_paths = [
+                    sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "tsv")
+                    for _, tr in gdf.iterrows()
+                ]
+                dfs = []
+                for f in input_paths:
+                    try:
+                        dfs.append(pd.read_csv(f, sep="\t"))
+                    except Exception:
+                        pass
+                if not dfs:
+                    print(f"    WARN combine {info_type} P{plate}/W{well}: no inputs")
+                    continue
 
-            combined = pd.concat(dfs, ignore_index=True)
-            combined = validate_dtypes(combined)
-            for col in combined.select_dtypes(include="object").columns:
-                converted = pd.to_numeric(combined[col], errors="coerce")
-                if converted.notna().sum() >= combined[col].notna().sum() * 0.95:
-                    combined[col] = converted
+                combined = pd.concat(dfs, ignore_index=True)
+                combined = validate_dtypes(combined)
+                for col in combined.select_dtypes(include="object").columns:
+                    converted = pd.to_numeric(combined[col], errors="coerce")
+                    if converted.notna().sum() >= combined[col].notna().sum() * 0.95:
+                        combined[col] = converted
 
-            Path(out).parent.mkdir(parents=True, exist_ok=True)
-            write_parquet(combined, out)
-            print(f"    OK combine {info_type} P{plate}/W{well} ({len(combined)} rows)")
+                Path(out).parent.mkdir(parents=True, exist_ok=True)
+                write_parquet(combined, out)
+                print(f"    OK combine {info_type} P{plate}/W{well} ({len(combined)} rows)")
 
     # --- Steps 15-16: Eval per plate ---
     print(f"\n  Eval per plate...")
@@ -687,28 +693,74 @@ def process_sbs(config, args):
         # Eval segmentation
         overview_out = sbs_plate_path(sbs_fp, fmt, plate, "segmentation_overview", "tsv", "segmentation")
         if not out_exists(overview_out):
-            try:
-                from lib.shared.eval_segmentation import segmentation_overview, plot_cell_density_heatmap
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
+            with monitor_step("Eval segmentation"):
+                try:
+                    from lib.shared.eval_segmentation import segmentation_overview, plot_cell_density_heatmap
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
 
-                stats_paths = [
-                    sbs_data_path(sbs_fp, fmt, plate, r["well"], r["tile"], "segmentation_stats", "tsv")
-                    for _, r in tile_combos[tile_combos["plate"] == plate].iterrows()
-                ]
-                stats_paths = [p for p in stats_paths if Path(p).exists()]
+                    stats_paths = [
+                        sbs_data_path(sbs_fp, fmt, plate, r["well"], r["tile"], "segmentation_stats", "tsv")
+                        for _, r in tile_combos[tile_combos["plate"] == plate].iterrows()
+                    ]
+                    stats_paths = [p for p in stats_paths if Path(p).exists()]
 
-                if stats_paths:
-                    overview_df = segmentation_overview(stats_paths)
-                    Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
-                    overview_df.to_csv(overview_out, sep="\t", index=False)
+                    if stats_paths:
+                        overview_df = segmentation_overview(stats_paths)
+                        Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
+                        overview_df.to_csv(overview_out, sep="\t", index=False)
+
+                        wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                        cells_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet") for w in wells]
+                        cells_paths = [p for p in cells_paths if Path(p).exists()]
+
+                        md_loc = make_loc(fmt, plate)
+                        md_paths = []
+                        for w in wells:
+                            mp = str(pp_meta_fp / "metadata" / "sbs" / get_data_output_path(
+                                make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
+                            if Path(mp).exists():
+                                md_paths.append(mp)
+
+                        if cells_paths and md_paths:
+                            cells_df = read_parquets(cells_paths)
+                            md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
+                            md_df = md_df.drop_duplicates(subset=["well", "tile"])
+                            summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
+                            heatmap_tsv = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "tsv", "segmentation")
+                            heatmap_png = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "png", "segmentation")
+                            summary.to_csv(heatmap_tsv, index=False, sep="\t")
+                            fig.savefig(heatmap_png, dpi=300, bbox_inches="tight", transparent=True)
+                            plt.close(fig)
+                        print(f"    OK eval_seg P{plate}")
+                except Exception as e:
+                    print(f"    ERR eval_seg P{plate}: {e}")
+                    errs += 1
+
+        # Eval mapping
+        mapping_out = sbs_plate_path(sbs_fp, fmt, plate, "mapping_vs_threshold_peak", "png", "mapping")
+        if not out_exists(mapping_out):
+            with monitor_step("Eval mapping"):
+                try:
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
+                    from lib.sbs.standardize_barcode_design import get_barcode_list
+                    from lib.sbs.eval_mapping import (
+                        plot_mapping_vs_threshold, plot_read_mapping_heatmap,
+                        plot_cell_mapping_heatmap, plot_cell_metric_histogram,
+                        plot_gene_symbol_histogram, mapping_overview, plot_barcode_prefix_matching,
+                    )
 
                     wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                    reads_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "reads", "parquet") for w in wells]
                     cells_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet") for w in wells]
+                    info_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "sbs_info", "parquet") for w in wells]
+                    reads_paths = [p for p in reads_paths if Path(p).exists()]
                     cells_paths = [p for p in cells_paths if Path(p).exists()]
+                    info_paths = [p for p in info_paths if Path(p).exists()]
 
-                    md_loc = make_loc(fmt, plate)
                     md_paths = []
                     for w in wells:
                         mp = str(pp_meta_fp / "metadata" / "sbs" / get_data_output_path(
@@ -716,114 +768,70 @@ def process_sbs(config, args):
                         if Path(mp).exists():
                             md_paths.append(mp)
 
-                    if cells_paths and md_paths:
-                        cells_df = read_parquets(cells_paths)
-                        md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
-                        md_df = md_df.drop_duplicates(subset=["well", "tile"])
-                        summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
-                        heatmap_tsv = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "tsv", "segmentation")
-                        heatmap_png = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "png", "segmentation")
-                        summary.to_csv(heatmap_tsv, index=False, sep="\t")
-                        fig.savefig(heatmap_png, dpi=300, bbox_inches="tight", transparent=True)
-                        plt.close(fig)
-                    print(f"    OK eval_seg P{plate}")
-            except Exception as e:
-                print(f"    ERR eval_seg P{plate}: {e}")
-                errs += 1
+                    if not (reads_paths and cells_paths and info_paths and md_paths):
+                        print(f"    SKIP eval_mapping P{plate}: missing inputs")
+                        continue
 
-        # Eval mapping
-        mapping_out = sbs_plate_path(sbs_fp, fmt, plate, "mapping_vs_threshold_peak", "png", "mapping")
-        if not out_exists(mapping_out):
-            try:
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
-                from lib.sbs.standardize_barcode_design import get_barcode_list
-                from lib.sbs.eval_mapping import (
-                    plot_mapping_vs_threshold, plot_read_mapping_heatmap,
-                    plot_cell_mapping_heatmap, plot_cell_metric_histogram,
-                    plot_gene_symbol_histogram, mapping_overview, plot_barcode_prefix_matching,
-                )
-
-                wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
-                reads_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "reads", "parquet") for w in wells]
-                cells_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet") for w in wells]
-                info_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "sbs_info", "parquet") for w in wells]
-                reads_paths = [p for p in reads_paths if Path(p).exists()]
-                cells_paths = [p for p in cells_paths if Path(p).exists()]
-                info_paths = [p for p in info_paths if Path(p).exists()]
-
-                md_paths = []
-                for w in wells:
-                    mp = str(pp_meta_fp / "metadata" / "sbs" / get_data_output_path(
-                        make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
-                    if Path(mp).exists():
-                        md_paths.append(mp)
-
-                if not (reads_paths and cells_paths and info_paths and md_paths):
-                    print(f"    SKIP eval_mapping P{plate}: missing inputs")
-                    continue
-
-                barcode_lib = pd.read_csv(sbs_cfg["df_barcode_library_fp"], sep="\t")
-                barcode_type = sbs_cfg.get("barcode_type", "simple")
-                if barcode_type == "multi":
-                    barcodes = get_barcode_list(barcode_lib, sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
-                else:
-                    barcodes = get_barcode_list(barcode_lib)
-
-                reads = read_parquets(reads_paths)
-                cells = read_parquets(cells_paths)
-                sbs_info = read_parquets(info_paths)
-                metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
-
-                eval_dir = sbs_fp / "eval" / "mapping"
-                Path(eval_dir).mkdir(parents=True, exist_ok=True)
-
-                def _save(info, ext, fig_or_df):
-                    path = sbs_plate_path(sbs_fp, fmt, plate, info, ext, "mapping")
-                    Path(path).parent.mkdir(parents=True, exist_ok=True)
-                    if isinstance(fig_or_df, pd.DataFrame):
-                        fig_or_df.to_csv(path, index=False, sep="\t")
+                    barcode_lib = pd.read_csv(sbs_cfg["df_barcode_library_fp"], sep="\t")
+                    barcode_type = sbs_cfg.get("barcode_type", "simple")
+                    if barcode_type == "multi":
+                        barcodes = get_barcode_list(barcode_lib, sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
                     else:
-                        fig_or_df.savefig(path, dpi=300, bbox_inches="tight", transparent=True)
-                        plt.close(fig_or_df)
+                        barcodes = get_barcode_list(barcode_lib)
 
-                _, fig = plot_mapping_vs_threshold(reads, barcodes, "peak", num_thresholds=10)
-                _save("mapping_vs_threshold_peak", "png", fig)
-                _, fig = plot_mapping_vs_threshold(reads, barcodes, "Q_min", num_thresholds=10)
-                _save("mapping_vs_threshold_qmin", "png", fig)
-                fig = plot_read_mapping_heatmap(reads, barcodes, metadata=metadata)
-                _save("read_mapping_heatmap", "png", fig)
+                    reads = read_parquets(reads_paths)
+                    cells = read_parquets(cells_paths)
+                    sbs_info = read_parquets(info_paths)
+                    metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
 
-                sort_by = sbs_cfg.get("sort_calls", "count")
-                df1, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="one", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
-                _save("cell_mapping_heatmap_one", "tsv", df1)
-                _save("cell_mapping_heatmap_one", "png", fig)
-                df2, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="any", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
-                _save("cell_mapping_heatmap_any", "tsv", df2)
-                _save("cell_mapping_heatmap_any", "png", fig)
+                    eval_dir = sbs_fp / "eval" / "mapping"
+                    Path(eval_dir).mkdir(parents=True, exist_ok=True)
 
-                _, fig = plot_cell_metric_histogram(cells, sort_by=sort_by)
-                _save("cell_metric_histogram", "png", fig)
-                _, fig = plot_gene_symbol_histogram(cells)
-                _save("gene_symbol_histogram", "png", fig)
-                mo = mapping_overview(sbs_info, cells, sort_by=sort_by)
-                _save("mapping_overview", "tsv", mo)
+                    def _save(info, ext, fig_or_df):
+                        path = sbs_plate_path(sbs_fp, fmt, plate, info, ext, "mapping")
+                        Path(path).parent.mkdir(parents=True, exist_ok=True)
+                        if isinstance(fig_or_df, pd.DataFrame):
+                            fig_or_df.to_csv(path, index=False, sep="\t")
+                        else:
+                            fig_or_df.savefig(path, dpi=300, bbox_inches="tight", transparent=True)
+                            plt.close(fig_or_df)
 
-                lib_col = (sbs_cfg.get("prefix_map", "prefix_map") if barcode_type == "multi"
-                           else sbs_cfg.get("prefix_col", "prefix"))
-                if barcode_type == "multi":
-                    _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col,
-                                                          library_col_recomb=sbs_cfg.get("prefix_recomb", "prefix_recomb"),
-                                                          sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
-                else:
-                    _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col)
-                _save("barcode_prefix_matching", "png", fig)
+                    _, fig = plot_mapping_vs_threshold(reads, barcodes, "peak", num_thresholds=10)
+                    _save("mapping_vs_threshold_peak", "png", fig)
+                    _, fig = plot_mapping_vs_threshold(reads, barcodes, "Q_min", num_thresholds=10)
+                    _save("mapping_vs_threshold_qmin", "png", fig)
+                    fig = plot_read_mapping_heatmap(reads, barcodes, metadata=metadata)
+                    _save("read_mapping_heatmap", "png", fig)
 
-                print(f"    OK eval_mapping P{plate}")
-            except Exception as e:
-                print(f"    ERR eval_mapping P{plate}: {e}")
-                errs += 1
+                    sort_by = sbs_cfg.get("sort_calls", "count")
+                    df1, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="one", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
+                    _save("cell_mapping_heatmap_one", "tsv", df1)
+                    _save("cell_mapping_heatmap_one", "png", fig)
+                    df2, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="any", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
+                    _save("cell_mapping_heatmap_any", "tsv", df2)
+                    _save("cell_mapping_heatmap_any", "png", fig)
+
+                    _, fig = plot_cell_metric_histogram(cells, sort_by=sort_by)
+                    _save("cell_metric_histogram", "png", fig)
+                    _, fig = plot_gene_symbol_histogram(cells)
+                    _save("gene_symbol_histogram", "png", fig)
+                    mo = mapping_overview(sbs_info, cells, sort_by=sort_by)
+                    _save("mapping_overview", "tsv", mo)
+
+                    lib_col = (sbs_cfg.get("prefix_map", "prefix_map") if barcode_type == "multi"
+                               else sbs_cfg.get("prefix_col", "prefix"))
+                    if barcode_type == "multi":
+                        _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col,
+                                                              library_col_recomb=sbs_cfg.get("prefix_recomb", "prefix_recomb"),
+                                                              sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
+                    else:
+                        _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col)
+                    _save("barcode_prefix_matching", "png", fig)
+
+                    print(f"    OK eval_mapping P{plate}")
+                except Exception as e:
+                    print(f"    ERR eval_mapping P{plate}: {e}")
+                    errs += 1
 
     return errs
 

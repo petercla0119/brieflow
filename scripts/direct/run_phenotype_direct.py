@@ -622,31 +622,32 @@ def process_phenotype(config, args):
     # --- Step 7: Combine phenotype info (per well) ---
     # ponytail shim #3: gate combine/eval (steps 7-10) to post-seg so `--step segment` (GPU box)
     # doesn't combine/eval empty per-tile data and poison out_exists() skips.
-    print(f"\n  Combine phenotype info per well...")
-    for (plate, well), gdf in post_seg_tc.groupby(["plate", "well"]):
-        out = phen_well_path(phen_fp, fmt, plate, well, "phenotype_info", "parquet")
-        if out_exists(out):
-            print(f"    SKIP combine phenotype_info P{plate}/W{well}")
-            continue
+    with monitor_step("Combine phenotype info"):
+        print(f"\n  Combine phenotype info per well...")
+        for (plate, well), gdf in post_seg_tc.groupby(["plate", "well"]):
+            out = phen_well_path(phen_fp, fmt, plate, well, "phenotype_info", "parquet")
+            if out_exists(out):
+                print(f"    SKIP combine phenotype_info P{plate}/W{well}")
+                continue
 
-        input_paths = [
-            phen_data_path(phen_fp, fmt, plate, well, str(tr["tile"]), "phenotype_info", "tsv")
-            for _, tr in gdf.iterrows()
-        ]
-        dfs = []
-        for f in input_paths:
-            try:
-                dfs.append(pd.read_csv(f, sep="\t"))
-            except Exception:
-                pass
-        if not dfs:
-            print(f"    WARN combine phenotype_info P{plate}/W{well}: no inputs")
-            continue
+            input_paths = [
+                phen_data_path(phen_fp, fmt, plate, well, str(tr["tile"]), "phenotype_info", "tsv")
+                for _, tr in gdf.iterrows()
+            ]
+            dfs = []
+            for f in input_paths:
+                try:
+                    dfs.append(pd.read_csv(f, sep="\t"))
+                except Exception:
+                    pass
+            if not dfs:
+                print(f"    WARN combine phenotype_info P{plate}/W{well}: no inputs")
+                continue
 
-        combined = pd.concat(dfs, ignore_index=True)
-        combined = validate_dtypes(combined)
-        atomic_write_parquet(combined, out)
-        print(f"    OK combine phenotype_info P{plate}/W{well} ({len(combined)} rows)")
+            combined = pd.concat(dfs, ignore_index=True)
+            combined = validate_dtypes(combined)
+            atomic_write_parquet(combined, out)
+            print(f"    OK combine phenotype_info P{plate}/W{well} ({len(combined)} rows)")
 
     # --- Step 8: Merge phenotype (per well) ---
     # merge is memory-bound (~66 GB peak per well): parallelize across wells but cap
@@ -665,48 +666,49 @@ def process_phenotype(config, args):
     for plate in sorted(post_seg_tc["plate"].unique()):
         overview_out = phen_plate_path(phen_fp, fmt, plate, "segmentation_overview", "tsv", "segmentation")
         if not out_exists(overview_out):
-            try:
-                from lib.shared.eval_segmentation import segmentation_overview, plot_cell_density_heatmap
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
+            with monitor_step("Eval segmentation"):
+                try:
+                    from lib.shared.eval_segmentation import segmentation_overview, plot_cell_density_heatmap
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
 
-                stats_paths = [
-                    phen_data_path(phen_fp, fmt, plate, r["well"], r["tile"], "segmentation_stats", "tsv")
-                    for _, r in tile_combos[tile_combos["plate"] == plate].iterrows()
-                ]
-                stats_paths = [p for p in stats_paths if Path(p).exists()]
+                    stats_paths = [
+                        phen_data_path(phen_fp, fmt, plate, r["well"], r["tile"], "segmentation_stats", "tsv")
+                        for _, r in tile_combos[tile_combos["plate"] == plate].iterrows()
+                    ]
+                    stats_paths = [p for p in stats_paths if Path(p).exists()]
 
-                if stats_paths:
-                    overview_df = segmentation_overview(stats_paths)
-                    Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
-                    overview_df.to_csv(overview_out, sep="\t", index=False)
+                    if stats_paths:
+                        overview_df = segmentation_overview(stats_paths)
+                        Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
+                        overview_df.to_csv(overview_out, sep="\t", index=False)
 
-                    wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
-                    cells_paths = [phen_well_path(phen_fp, fmt, plate, w, "phenotype_info", "parquet") for w in wells]
-                    cells_paths = [p for p in cells_paths if Path(p).exists()]
+                        wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                        cells_paths = [phen_well_path(phen_fp, fmt, plate, w, "phenotype_info", "parquet") for w in wells]
+                        cells_paths = [p for p in cells_paths if Path(p).exists()]
 
-                    md_paths = []
-                    for w in wells:
-                        mp = str(pp_fp / "metadata" / "phenotype" / get_data_output_path(
-                            make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
-                        if Path(mp).exists():
-                            md_paths.append(mp)
+                        md_paths = []
+                        for w in wells:
+                            mp = str(pp_fp / "metadata" / "phenotype" / get_data_output_path(
+                                make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
+                            if Path(mp).exists():
+                                md_paths.append(mp)
 
-                    if cells_paths and md_paths:
-                        cells_df = read_parquets(cells_paths)
-                        md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
-                        md_df = md_df.drop_duplicates(subset=["well", "tile"])
-                        summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
-                        heatmap_tsv = phen_plate_path(phen_fp, fmt, plate, "cell_density_heatmap", "tsv", "segmentation")
-                        heatmap_png = phen_plate_path(phen_fp, fmt, plate, "cell_density_heatmap", "png", "segmentation")
-                        summary.to_csv(heatmap_tsv, index=False, sep="\t")
-                        fig.savefig(heatmap_png, dpi=300, bbox_inches="tight", transparent=True)
-                        plt.close(fig)
-                    print(f"    OK eval_seg P{plate}")
-            except Exception as e:
-                print(f"    ERR eval_seg P{plate}: {e}")
-                errs += 1
+                        if cells_paths and md_paths:
+                            cells_df = read_parquets(cells_paths)
+                            md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
+                            md_df = md_df.drop_duplicates(subset=["well", "tile"])
+                            summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
+                            heatmap_tsv = phen_plate_path(phen_fp, fmt, plate, "cell_density_heatmap", "tsv", "segmentation")
+                            heatmap_png = phen_plate_path(phen_fp, fmt, plate, "cell_density_heatmap", "png", "segmentation")
+                            summary.to_csv(heatmap_tsv, index=False, sep="\t")
+                            fig.savefig(heatmap_png, dpi=300, bbox_inches="tight", transparent=True)
+                            plt.close(fig)
+                        print(f"    OK eval_seg P{plate}")
+                except Exception as e:
+                    print(f"    ERR eval_seg P{plate}: {e}")
+                    errs += 1
 
     # --- Step 10: Eval features (per plate) ---
     for plate in sorted(post_seg_tc["plate"].unique()):
@@ -715,45 +717,46 @@ def process_phenotype(config, args):
         if first_out and out_exists(first_out):
             print(f"    SKIP eval_features P{plate}")
             continue
-        try:
-            from lib.phenotype.eval_features import plot_feature_heatmap
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
+        with monitor_step("Eval features"):
+            try:
+                from lib.phenotype.eval_features import plot_feature_heatmap
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
 
-            wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
-            min_paths = [phen_well_path(phen_fp, fmt, plate, w, "phenotype_cp_min", "parquet") for w in wells]
-            min_paths = [p for p in min_paths if Path(p).exists()]
-            if not min_paths:
-                print(f"    SKIP eval_features P{plate}: no inputs")
-                continue
+                wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                min_paths = [phen_well_path(phen_fp, fmt, plate, w, "phenotype_cp_min", "parquet") for w in wells]
+                min_paths = [p for p in min_paths if Path(p).exists()]
+                if not min_paths:
+                    print(f"    SKIP eval_features P{plate}: no inputs")
+                    continue
 
-            md_paths = []
-            for w in wells:
-                mp = str(pp_fp / "metadata" / "phenotype" / get_data_output_path(
-                    make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
-                if Path(mp).exists():
-                    md_paths.append(mp)
+                md_paths = []
+                for w in wells:
+                    mp = str(pp_fp / "metadata" / "phenotype" / get_data_output_path(
+                        make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
+                    if Path(mp).exists():
+                        md_paths.append(mp)
 
-            phenotype_cp_min = read_parquets(min_paths)
-            metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
+                phenotype_cp_min = read_parquets(min_paths)
+                metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
 
-            min_feature_names = [col for col in phenotype_cp_min.columns if col.endswith("_min")]
-            for feature_name in min_feature_names:
-                tsv_out = phen_plate_path(phen_fp, fmt, plate, f"{feature_name}_heatmap", "tsv", "features")
-                png_out = phen_plate_path(phen_fp, fmt, plate, f"{feature_name}_heatmap", "png", "features")
-                Path(tsv_out).parent.mkdir(parents=True, exist_ok=True)
-                df_summary, fig = plot_feature_heatmap(
-                    phenotype_cp_min, feature=feature_name,
-                    metadata=metadata, return_summary=True,
-                )
-                df_summary.to_csv(tsv_out, index=False, sep="\t")
-                fig.savefig(png_out, dpi=300, bbox_inches="tight", transparent=True)
-                plt.close(fig)
-            print(f"    OK eval_features P{plate} ({len(min_feature_names)} features)")
-        except Exception as e:
-            print(f"    ERR eval_features P{plate}: {e}")
-            errs += 1
+                min_feature_names = [col for col in phenotype_cp_min.columns if col.endswith("_min")]
+                for feature_name in min_feature_names:
+                    tsv_out = phen_plate_path(phen_fp, fmt, plate, f"{feature_name}_heatmap", "tsv", "features")
+                    png_out = phen_plate_path(phen_fp, fmt, plate, f"{feature_name}_heatmap", "png", "features")
+                    Path(tsv_out).parent.mkdir(parents=True, exist_ok=True)
+                    df_summary, fig = plot_feature_heatmap(
+                        phenotype_cp_min, feature=feature_name,
+                        metadata=metadata, return_summary=True,
+                    )
+                    df_summary.to_csv(tsv_out, index=False, sep="\t")
+                    fig.savefig(png_out, dpi=300, bbox_inches="tight", transparent=True)
+                    plt.close(fig)
+                print(f"    OK eval_features P{plate} ({len(min_feature_names)} features)")
+            except Exception as e:
+                print(f"    ERR eval_features P{plate}: {e}")
+                errs += 1
 
     return errs
 
