@@ -33,6 +33,7 @@ from lib.shared.file_utils import get_data_output_path, get_image_output_path, v
 from lib.shared.image_io import read_image, save_image
 from lib.shared.illumination_correction import apply_ic_field, combine_ic_images
 from lib.shared.parquet_io import write_parquet, read_parquets
+from lib.shared.combine_dfs import combine_tile_dfs
 from lib.shared.rule_utils import get_call_cells_params, get_segmentation_params, get_spot_detection_params
 from lib.shared.resource_monitor import monitor_step, set_benchmark_context
 
@@ -665,22 +666,12 @@ def process_sbs(config, args):
                     sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "tsv")
                     for _, tr in gdf.iterrows()
                 ]
-                dfs = []
-                for f in input_paths:
-                    try:
-                        dfs.append(pd.read_csv(f, sep="\t"))
-                    except Exception:
-                        pass
-                if not dfs:
+                # Read per-tile TSVs, concat, and normalize dtypes (shared helper).
+                # ponytail: Phase 2 will drop TSV intermediates for parquet upstream.
+                combined = combine_tile_dfs(input_paths)
+                if combined is None:
                     print(f"    WARN combine {info_type} P{plate}/W{well}: no inputs")
                     continue
-
-                combined = pd.concat(dfs, ignore_index=True)
-                combined = validate_dtypes(combined)
-                for col in combined.select_dtypes(include="object").columns:
-                    converted = pd.to_numeric(combined[col], errors="coerce")
-                    if converted.notna().sum() >= combined[col].notna().sum() * 0.95:
-                        combined[col] = converted
 
                 Path(out).parent.mkdir(parents=True, exist_ok=True)
                 write_parquet(combined, out)
@@ -724,7 +715,7 @@ def process_sbs(config, args):
                                 md_paths.append(mp)
 
                         if cells_paths and md_paths:
-                            cells_df = read_parquets(cells_paths)
+                            cells_df = read_parquets(cells_paths, columns=["well", "tile"])
                             md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
                             md_df = md_df.drop_duplicates(subset=["well", "tile"])
                             summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
@@ -779,9 +770,9 @@ def process_sbs(config, args):
                     else:
                         barcodes = get_barcode_list(barcode_lib)
 
-                    reads = read_parquets(reads_paths)
+                    reads = read_parquets(reads_paths, columns=["cell", "well", "tile", "barcode", "Q_min", "peak"])
                     cells = read_parquets(cells_paths)
-                    sbs_info = read_parquets(info_paths)
+                    sbs_info = read_parquets(info_paths, columns=["well", "tile", "cell"])
                     metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
 
                     eval_dir = sbs_fp / "eval" / "mapping"
