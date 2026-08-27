@@ -168,59 +168,63 @@ def _worker_init_gpu(num_gpus, counter, lock, omp_threads=4):
 # Per-tile workers
 # ---------------------------------------------------------------------------
 
-def _apply_ic_one(task):
-    raw_path, ic_path, output_path = task
-    tag = Path(output_path).stem
-    if out_exists(output_path):
-        return "skip", tag
-    try:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        raw = read_image(raw_path)
-        ic = read_image(ic_path)
-        corrected = apply_ic_field(raw, correction=ic)
-        save_image(corrected, output_path)
-        return "ok", tag
-    except Exception as e:
-        return "err", f"{tag}: {e}"
+def _align_array(data, align_cfg):
+    """Channel alignment transform (custom offsets + phenotype FFT alignment). Pure
+    in-memory; no I/O. Shared by the fused pre-seg worker."""
+    from lib.phenotype.align_channels import align_phenotype_channels
+    from lib.shared.align import apply_custom_offsets
 
+    if align_cfg.get("custom_channel_offsets"):
+        data = apply_custom_offsets(data, offsets_dict=align_cfg["custom_channel_offsets"])
 
-def _align_one(task):
-    input_path, output_path, align_cfg = task
-    tag = Path(output_path).stem
-    if out_exists(output_path):
-        return "skip", tag
-    try:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        from lib.phenotype.align_channels import align_phenotype_channels
-        from lib.shared.align import apply_custom_offsets
-        data = read_image(input_path)
-
-        if align_cfg.get("custom_channel_offsets"):
-            data = apply_custom_offsets(data, offsets_dict=align_cfg["custom_channel_offsets"])
-
-        if align_cfg.get("align", False):
-            if align_cfg.get("multi_step", False):
-                for step in align_cfg["steps"]:
-                    data = align_phenotype_channels(
-                        data,
-                        target=step["target"],
-                        source=step["source"],
-                        riders=step.get("riders", []),
-                        remove_channel=step["remove_channel"],
-                        upsample_factor=step.get("upsample_factor", align_cfg.get("upsample_factor", 2)),
-                        window=step.get("window", align_cfg.get("window", 2)),
-                    )
-            else:
+    if align_cfg.get("align", False):
+        if align_cfg.get("multi_step", False):
+            for step in align_cfg["steps"]:
                 data = align_phenotype_channels(
                     data,
-                    target=align_cfg["target"],
-                    source=align_cfg["source"],
-                    riders=align_cfg.get("riders", []),
-                    remove_channel=align_cfg.get("remove_channel", False),
-                    upsample_factor=align_cfg.get("upsample_factor", 2),
-                    window=align_cfg.get("window", 2),
+                    target=step["target"],
+                    source=step["source"],
+                    riders=step.get("riders", []),
+                    remove_channel=step["remove_channel"],
+                    upsample_factor=step.get("upsample_factor", align_cfg.get("upsample_factor", 2)),
+                    window=step.get("window", align_cfg.get("window", 2)),
                 )
+        else:
+            data = align_phenotype_channels(
+                data,
+                target=align_cfg["target"],
+                source=align_cfg["source"],
+                riders=align_cfg.get("riders", []),
+                remove_channel=align_cfg.get("remove_channel", False),
+                upsample_factor=align_cfg.get("upsample_factor", 2),
+                window=align_cfg.get("window", 2),
+            )
+    return data
 
+
+def _preseg_one(task):
+    """Fused Apply-IC + Align, one in-memory pass per tile.
+
+    Reads raw + IC field, applies illumination correction, aligns channels, and writes the
+    'aligned' output directly -- skipping the throwaway 'illumination_corrected' intermediate
+    (a write + re-read of ~226 MB/tile, plus a redundant compress/decompress). 'aligned' is
+    byte-identical to the old two-step path; segmentation reads only 'aligned'.
+
+    Set ic_out (via --save-ic-intermediate) to also persist illumination_corrected for
+    debugging / Snakemake parity; even then we skip the re-read (align continues in memory).
+    Decision record: 03_contexts/tdp-gws/__appendix/2026-08-27-phenotype-preseg-fuse-ic-align.md
+    """
+    raw_path, ic_path, output_path, align_cfg, ic_out = task
+    tag = Path(output_path).stem
+    if out_exists(output_path):
+        return "skip", tag
+    try:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        data = apply_ic_field(read_image(raw_path), correction=read_image(ic_path))
+        if ic_out and not out_exists(ic_out):
+            Path(ic_out).parent.mkdir(parents=True, exist_ok=True)
+            save_image(data, ic_out)
+        data = _align_array(data, align_cfg)
         save_image(data, output_path)
         return "ok", tag
     except Exception as e:
@@ -438,6 +442,18 @@ def _merge_well_one(task):
 # Main processing
 # ---------------------------------------------------------------------------
 
+def _verify_aligned_complete(tile_combos, phen_fp, fmt):
+    """Return [(plate, well, tile), ...] whose 'aligned' output is missing. Guards the
+    CPU->GPU handoff: segmentation reads 'aligned', so a partial pre-seg would silently
+    under-segment. Resumable out_exists() skips don't assert completeness -- this does."""
+    missing = []
+    for _, r in tile_combos.iterrows():
+        p, we, ti = r["plate"], r["well"], r["tile"]
+        if not out_exists(phen_img_path(phen_fp, fmt, p, we, ti, "aligned")):
+            missing.append((p, we, ti))
+    return missing
+
+
 def process_phenotype(config, args):
     phen_cfg = config["phenotype"]
     pp_cfg = config.get("preprocess", {})
@@ -497,26 +513,50 @@ def process_phenotype(config, args):
     segment_tc = tile_combos if step in ("segment", "all") else tile_combos.iloc[0:0]
     post_seg_tc = tile_combos if step in ("post-seg", "all") else tile_combos.iloc[0:0]
 
-    # --- Step 1: Apply IC field ---
+    # --- Step 1+2: Apply IC field + Align (fused, one in-memory pass) ---
+    # Fused to skip the throwaway 'illumination_corrected' intermediate (write + re-read,
+    # ~226 MB/tile) since the direct runner's only consumer of the corrected image is align,
+    # and segment reads only 'aligned'. --save-ic-intermediate re-enables the step-wise write.
+    save_ic = getattr(args, "save_ic_intermediate", False)
     tasks = []
     for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         raw = preprocess_phen_img_path(pp_fp, fmt, p, we, ti)
         ic = preprocess_phen_ic_path(pp_fp, fmt, p, we)
-        out = phen_img_path(phen_fp, fmt, p, we, ti, "illumination_corrected")
-        tasks.append((raw, ic, out))
-    errs += run_parallel(tasks, _apply_ic_one, w, "Apply IC field")
-
-    # --- Step 2: Align ---
-    tasks = []
-    for _, r in pre_seg_tc.iterrows():
-        p, we, ti = r["plate"], r["well"], r["tile"]
-        inp = phen_img_path(phen_fp, fmt, p, we, ti, "illumination_corrected")
         out = phen_img_path(phen_fp, fmt, p, we, ti, "aligned")
-        tasks.append((inp, out, align_cfgs[p]))
-    errs += run_parallel(tasks, _align_one, w, "Align phenotype")
+        ic_out = phen_img_path(phen_fp, fmt, p, we, ti, "illumination_corrected") if save_ic else None
+        tasks.append((raw, ic, out, align_cfgs[p], ic_out))
+    errs += run_parallel(tasks, _preseg_one, w, "Apply IC + Align (fused)")
+
+    # Completeness gate: confirm every pre-seg tile produced an 'aligned' output before the
+    # CPU->GPU handoff. Segment reads only 'aligned', so a partial pre-seg silently under-
+    # segments. out_exists() skips make pre-seg resumable but don't assert completeness.
+    if len(pre_seg_tc) and not getattr(args, "allow_partial", False):
+        missing = _verify_aligned_complete(pre_seg_tc, phen_fp, fmt)
+        if missing:
+            print(f"\n  INCOMPLETE PRE-SEG: {len(missing)}/{len(pre_seg_tc)} tiles missing 'aligned'")
+            for mp, mw, mt in missing[:20]:
+                print(f"    MISSING aligned P{mp}/W{mw}/T{mt}")
+            if len(missing) > 20:
+                print(f"    ... and {len(missing) - 20} more")
+            print("  Aborting before handoff. Re-run pre-seg to fill gaps, or pass --allow-partial.")
+            return errs + len(missing)
+        print(f"  Pre-seg complete: all {len(pre_seg_tc)} 'aligned' tiles present.")
 
     # --- Step 3: Segment ---
+    # Handoff gate: on the GPU box (--step segment) verify all 'aligned' inputs exist on the
+    # mounted disk before spending GPU time (pre-seg incomplete or disk not fully synced).
+    if len(segment_tc) and not getattr(args, "allow_partial", False):
+        missing = _verify_aligned_complete(segment_tc, phen_fp, fmt)
+        if missing:
+            print(f"\n  CANNOT SEGMENT: {len(missing)}/{len(segment_tc)} 'aligned' inputs missing")
+            for mp, mw, mt in missing[:20]:
+                print(f"    MISSING aligned P{mp}/W{mw}/T{mt}")
+            if len(missing) > 20:
+                print(f"    ... and {len(missing) - 20} more")
+            print("  Aborting before GPU work. Finish pre-seg / re-attach the disk, or pass --allow-partial.")
+            return errs + len(missing)
+
     seg_gpus = args.seg_gpus
     if args.gpu and seg_gpus > 1:
         try:
@@ -743,6 +783,11 @@ def main():
                    help="Workers for segmentation step (default: seg-gpus if --gpu, else --workers)")
     p.add_argument("--step", choices=["pre-seg", "segment", "post-seg", "all"], default="all",
                    help="pre-seg=IC+align (CPU), segment=cellpose (GPU), post-seg=extract+combine (CPU), all=everything")
+    p.add_argument("--save-ic-intermediate", action="store_true",
+                   help="Also persist illumination_corrected images (step-wise/Snakemake parity); "
+                        "default fuses IC+align and writes only 'aligned'")
+    p.add_argument("--allow-partial", action="store_true",
+                   help="Skip the pre-seg/segment completeness gate (for intentional sharded runs)")
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
