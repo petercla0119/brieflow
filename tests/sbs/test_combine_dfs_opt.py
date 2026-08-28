@@ -7,11 +7,13 @@ Covers commit 361f0f5:
     frames feed the summary-producing eval functions with results identical to the
     full frames.
 
-FINDING (documented by test_polars_list_read_unsupported): in this env's polars
-(1.39.x) ``pl.read_csv`` rejects a *list* of paths, so the "fast path" inside
-combine_tile_dfs never runs -- every real call falls back to the pandas
-per-file read + concat, which is exactly the original logic. Output is therefore
-identical to the old code by construction; these tests confirm it.
+POLARS FAST PATH: combine_tile_dfs reads via pl.scan_csv per file + a
+diagonal_relaxed concat (pl.read_csv rejects a list of paths in polars 1.39.x).
+This path is LIVE -- test_polars_fast_path_runs asserts it actually executes.
+Because polars is correctly-rounded and the old pandas-DEFAULT CSV parser is
+not, output matches the old logic within rtol=1e-9 on float columns and byte-
+exactly elsewhere (Option A; see _assert_identical and combine_dfs.py).
+Validated both ways on real plate-4 data 2026-08-28.
 """
 
 import os
@@ -22,6 +24,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -77,15 +80,33 @@ def _reference_combine(paths):
     return combined
 
 
-def _assert_identical(new, ref):
-    """new == ref: same columns (order), same dtypes, same values (NaN==NaN)."""
+def _assert_identical(new, ref, float_rtol=1e-9):
+    """new ~= ref under the Phase-1 Option-A contract: same columns and dtypes,
+    non-float columns byte-identical, float columns equal within rtol=1e-9.
+
+    polars parses CSV floats correctly-rounded (== pandas float_precision=
+    "round_trip"); the old pandas-DEFAULT parser is imprecise, so they differ by
+    <~2e-12 on high-precision float columns. Validated both ways on real plate-4
+    data 2026-08-28 (round_trip==polars EXACT; default-vs-polars max |diff|
+    1.8e-12 reads / 9.1e-13 cells / 2.3e-13 sbs_info).
+    """
     assert list(new.columns) == list(ref.columns), (
         f"column mismatch: {list(new.columns)} vs {list(ref.columns)}"
     )
     assert new.dtypes.equals(ref.dtypes), (
         f"dtype mismatch:\nnew:\n{new.dtypes}\nref:\n{ref.dtypes}"
     )
-    assert new.equals(ref), "value mismatch between combine_tile_dfs and reference"
+    fcols = [c for c in new.columns if pd.api.types.is_float_dtype(new[c])]
+    nfcols = [c for c in new.columns if c not in fcols]
+    assert new[nfcols].reset_index(drop=True).equals(
+        ref[nfcols].reset_index(drop=True)
+    ), "non-float value mismatch between combine_tile_dfs and reference"
+    for c in fcols:
+        x = new[c].astype("float64").to_numpy()
+        y = ref[c].astype("float64").to_numpy()
+        assert np.allclose(x, y, rtol=float_rtol, atol=0.0, equal_nan=True), (
+            f"float column {c} differs beyond rtol={float_rtol}"
+        )
 
 
 def _write_tsv(path, header, rows):
@@ -177,12 +198,11 @@ def test_unit_all_empty_returns_none(tmp_path):
 
 @pytest.mark.unit
 def test_polars_list_read_unsupported(tmp_path):
-    """FINDING: pl.read_csv rejects a *list* of paths in this polars version.
+    """pl.read_csv rejects a *list* of paths in this polars version.
 
-    Consequence: the polars 'fast path' in combine_tile_dfs is unreachable and
-    every call uses the pandas fallback (== the original logic). This guards the
-    equivalence proof -- if a future polars starts accepting a list, this test
-    fails and the fast path must then be tested for output parity too.
+    This is WHY combine_tile_dfs uses pl.scan_csv per file + diagonal_relaxed
+    concat instead of read_csv(list). The fast path is live and separately
+    asserted by test_polars_fast_path_runs.
     """
     if not _HAS_POLARS:
         pytest.skip("polars not installed")
@@ -201,6 +221,31 @@ def test_polars_list_read_unsupported(tmp_path):
 
 
 # ─── integration: real plate-4 subset (gentle) ─────────────────────────────
+@pytest.mark.unit
+def test_polars_fast_path_runs(tmp_path):
+    """The polars fast path (scan_csv + diagonal_relaxed) actually executes.
+
+    Guards against silent regression to the pandas fallback: on a consistent-
+    schema multi-file read, combine_tile_dfs must increment _READ_STATS["polars"]
+    and take no fallback.
+    """
+    if not _HAS_POLARS:
+        pytest.skip("polars not installed")
+    from lib.shared import combine_dfs as _cd
+
+    hdr = ["well", "tile", "cell", "val"]
+    p1 = tmp_path / "t1.tsv"
+    _write_tsv(p1, hdr, [["A1", 2, 1, 10.533333333333333]])
+    p2 = tmp_path / "t2.tsv"
+    _write_tsv(p2, hdr, [["A1", 3, 1, 20.700000000000003]])
+    _cd._READ_STATS["polars"] = 0
+    _cd._READ_STATS["pandas_fallback"] = 0
+    out = _cd.combine_tile_dfs([str(p1), str(p2)])
+    assert out is not None
+    assert _cd._READ_STATS["polars"] == 1, _cd._READ_STATS
+    assert _cd._READ_STATS["pandas_fallback"] == 0, _cd._READ_STATS
+
+
 def _subset_paths(info):
     return [
         str(TSV_WELL / str(t) / f"{info}.tsv")
@@ -246,9 +291,7 @@ def test_golden_sbs_info_full_well(tmp_path):
     assert list(got.columns) == list(golden.columns), (
         f"golden column mismatch: {list(got.columns)} vs {list(golden.columns)}"
     )
-    assert got.equals(golden), (
-        "combine output does not match on-disk golden sbs_info parquet"
-    )
+    _assert_identical(got, golden)
 
 
 @pytest.mark.integration
