@@ -84,8 +84,10 @@ def _read_concat(paths):
     for f in paths:
         try:
             dfs.append(pd.read_csv(f, sep="\t"))
-        except Exception:
-            pass  # skip empty / unreadable, as the original code did
+        except pd.errors.EmptyDataError:
+            pass  # skip empty tiles ONLY, matching the original get_file semantics.
+            # Any other parse error (truncated/corrupt tile) must propagate and
+            # fail the rule loud -- silently dropping a tile is data loss.
     if not dfs:
         return None
     _READ_STATS["pandas_fallback"] += 1

@@ -246,6 +246,44 @@ def test_polars_fast_path_runs(tmp_path):
     assert _cd._READ_STATS["pandas_fallback"] == 0, _cd._READ_STATS
 
 
+@pytest.mark.unit
+def test_fallback_corrupt_tile_raises(tmp_path, monkeypatch):
+    """Pandas fallback must FAIL LOUD on a non-EmptyDataError read error.
+
+    Regression guard: the fallback previously swallowed all exceptions,
+    silently dropping corrupt/truncated tiles and writing an incomplete
+    combined parquet. Only EmptyDataError (empty tiles) may be skipped; any
+    other read error (e.g. ParserError) must propagate and fail the rule.
+    """
+    from lib.shared import combine_dfs as _cd
+    monkeypatch.setattr(_cd, "_HAS_POLARS", False)  # force pandas fallback
+    good = tmp_path / "good.tsv"
+    _write_tsv(good, ["well", "tile", "cell"], [["A1", 0, 1]])
+    bad = tmp_path / "bad.tsv"
+    _write_tsv(bad, ["well", "tile", "cell"], [["A1", 1, 1]])
+    real_read = _cd.pd.read_csv
+    def _fake(path, *a, **k):
+        if str(path) == str(bad):
+            raise pd.errors.ParserError("Error tokenizing data")
+        return real_read(path, *a, **k)
+    monkeypatch.setattr(_cd.pd, "read_csv", _fake)
+    with pytest.raises(pd.errors.ParserError):
+        _cd.combine_tile_dfs([str(good), str(bad)])
+
+
+@pytest.mark.unit
+def test_fallback_skips_empty_tile(tmp_path, monkeypatch):
+    """Pandas fallback still skips genuinely empty tiles (EmptyDataError)."""
+    from lib.shared import combine_dfs as _cd
+    monkeypatch.setattr(_cd, "_HAS_POLARS", False)
+    good = tmp_path / "good.tsv"
+    _write_tsv(good, ["well", "tile", "cell"], [["A1", 0, 1]])
+    empty = tmp_path / "empty.tsv"
+    empty.write_text("")  # 0-byte -> EmptyDataError -> skipped
+    out = _cd.combine_tile_dfs([str(good), str(empty)])
+    assert out is not None and len(out) == 1
+
+
 def _subset_paths(info):
     return [
         str(TSV_WELL / str(t) / f"{info}.tsv")
