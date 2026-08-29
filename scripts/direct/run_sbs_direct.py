@@ -370,7 +370,7 @@ def _call_reads_one(task):
         bases = pd.read_csv(bases_path, sep="\t")
         peaks = read_image(peaks_path)
         reads = call_reads(bases_data=bases, peaks_data=peaks, method=method)
-        reads.to_csv(output_path, index=False, sep="\t")
+        write_parquet(reads, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -413,7 +413,7 @@ def _call_cells_one(task):
                 max_distance=cc_params["max_distance"],
                 n_barcodes=cc_params["n_barcodes"],
             )
-        cells.to_csv(output_path, index=False, sep="\t")
+        write_parquet(cells, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -429,7 +429,7 @@ def _extract_sbs_info_one(task):
         from lib.shared.extract_phenotype_minimal import extract_phenotype_minimal
         nuclei = read_image(nuclei_path)
         df = extract_phenotype_minimal(phenotype_data=nuclei, nuclei_data=nuclei, wildcards=wc)
-        df.to_csv(output_path, index=False, sep="\t")
+        write_parquet(df, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"

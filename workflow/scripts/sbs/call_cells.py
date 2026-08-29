@@ -6,6 +6,7 @@ Supports both single-barcode and multi-barcode protocols.
 import pandas as pd
 
 from lib.sbs.call_cells import call_cells, load_barcode_library
+from lib.shared.parquet_io import write_parquet
 
 # Get configuration from params
 params = snakemake.params.config
@@ -52,4 +53,4 @@ else:
     )
 
 # Save cells data
-cells_data.to_csv(snakemake.output[0], index=False, sep="\t")
+write_parquet(cells_data, snakemake.output[0])
