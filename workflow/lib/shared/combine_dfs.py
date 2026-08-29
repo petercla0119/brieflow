@@ -56,9 +56,11 @@ def _cols(f, fmt):
 
 
 def _read_concat(paths):
-    """Fast multithreaded read + vertical (union) concat of per-tile TSVs.
+    """Fast multithreaded read + vertical (union) concat of per-tile tables.
 
-    Uses one polars diagonal_relaxed concat over per-file lazy scans, which
+    Each path is resolved to its parquet-else-tsv sibling; scan_parquet/scan_csv
+    is chosen per file. Uses one polars diagonal_relaxed concat over per-file
+    lazy scans, which
     reproduces the pandas concat column UNION (missing column -> null). 0-byte
     files are pre-filtered (pandas skips them via EmptyDataError; scan_csv can
     choke on them); header-only 0-row files are kept so their columns still
@@ -85,11 +87,11 @@ def _read_concat(paths):
             # float(nullable); validate_dtypes then lands integer-valued ones on
             # Int64. Replicate: cast integer union-missing columns to Float64 so
             # the fast path yields the same dtype as the pandas path.
+            # _cols is one footer/header read per file; hoist it so the
+            # union scan stays O(files), not O(files x columns).
+            file_cols = [_cols(f, fmt) for f, fmt in resolved]
             union_missing = {
-                c
-                for f, fmt in resolved
-                for c in df.columns
-                if c not in _cols(f, fmt)
+                c for s in file_cols for c in df.columns if c not in s
             }
             casts = [
                 pl.col(c).cast(pl.Float64)
