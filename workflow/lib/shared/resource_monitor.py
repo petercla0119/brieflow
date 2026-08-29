@@ -45,11 +45,33 @@ except ImportError:  # monitoring must never be a hard dependency of a step
 # shared-memory accounting is ever actually needed.
 
 COLUMNS = [
-    "iso_time", "stage", "step", "wall_s", "max_rss_mb", "max_vms_mb",
-    "max_cpu_pct", "mean_cpu_pct", "cpu_time_s", "peak_nproc", "n_samples",
+    "iso_time", "stage", "step", "plate", "machine_type", "n_workers",
+    "wall_s", "max_rss_mb", "max_vms_mb",
+    "max_cpu_pct", "mean_cpu_pct", "cpu_time_s", "read_mb", "write_mb",
+    "peak_nproc", "n_samples",
 ]
 
 _DEFAULT_INTERVAL = float(os.environ.get("BRIEFLOW_MONITOR_INTERVAL", "2.0"))
+
+
+def _detect_machine_type():
+    """GCP machine type (e.g. 'n2-standard-64'), '' off-GCP. Env override wins.
+
+    Queries the metadata server once; result is cached in the env by
+    set_benchmark_context so this network hit happens at most once per run.
+    """
+    mt = os.environ.get("BRIEFLOW_MACHINE_TYPE")
+    if mt is not None:
+        return mt
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/machine-type",
+            headers={"Metadata-Flavor": "Google"})
+        with urllib.request.urlopen(req, timeout=1.0) as r:
+            return r.read().decode().rsplit("/", 1)[-1]  # projects/.../machineTypes/X -> X
+    except Exception:
+        return ""  # not on GCP or metadata unreachable — leave blank
 
 
 def _resolve_out(out):
@@ -68,15 +90,24 @@ def _iso(t):
 class ResourceMonitor:
     """Sample a process tree's peak RSS/CPU until stopped, then append a row."""
 
-    def __init__(self, step, pid=None, out=None, interval=None, stage=None):
+    def __init__(self, step, pid=None, out=None, interval=None, stage=None,
+                 n_workers=None, plate=None):
         self.step = step
         self.pid = pid or os.getpid()
         self.out = _resolve_out(out)
         self.interval = interval or _DEFAULT_INTERVAL
         self.stage = stage or os.environ.get("BRIEFLOW_STAGE", "")
+        self.n_workers = n_workers if n_workers is not None else os.environ.get("BRIEFLOW_N_WORKERS", "")
+        self.plate = plate if plate is not None else os.environ.get("BRIEFLOW_PLATE", "")
+        self.machine_type = os.environ.get("BRIEFLOW_MACHINE_TYPE") or _detect_machine_type()
         self._stop = threading.Event()
         self._thread = None
         self._pcache = {}  # pid -> psutil.Process, reused so cpu_percent() deltas work
+        self._io_baseline = {}  # pid -> (read_bytes, write_bytes) at first sight
+        self._io_last = {}      # pid -> latest (read_bytes, write_bytes)
+        self._io_ok = True      # cleared if io_counters unsupported (e.g. macOS)
+        self.read_bytes = 0
+        self.write_bytes = 0
         self.max_rss = 0
         self.max_vms = 0
         self.max_cpu = 0.0
@@ -102,6 +133,7 @@ class ResourceMonitor:
                   file=sys.stderr)
             return self
         self.t0 = time.time()
+        self._prime_root_io()
         self._thread = threading.Thread(target=self._run, name="resmon", daemon=True)
         self._thread.start()
         return self
@@ -113,6 +145,7 @@ class ResourceMonitor:
         if self._thread:
             self._thread.join(timeout=self.interval + 5)
         self._finalize_cpu_time()
+        self._finalize_io()
         self._write()
 
     # -- internals -----------------------------------------------------------
@@ -170,6 +203,7 @@ class ResourceMonitor:
                 n += 1
             except psutil.Error:
                 continue  # process vanished mid-sample; skip it
+            self._sample_io(p)
         if n == 0:
             return
         self.max_rss = max(self.max_rss, rss)
@@ -178,6 +212,46 @@ class ResourceMonitor:
         self.peak_nproc = max(self.peak_nproc, n)
         self._cpu_sum += cpu
         self._samples += 1
+
+    def _prime_root_io(self):
+        # Baseline the root process's disk counters at step start so I/O done
+        # before the first sample tick still counts (single-process steps do all
+        # their I/O in root; pool workers are born after this and baseline at
+        # first-sight instead, undercounting only their first ~interval of I/O).
+        if not self._io_ok:
+            return
+        try:
+            io = psutil.Process(self.pid).io_counters()
+            self._io_baseline[self.pid] = (io.read_bytes, io.write_bytes)
+        except (psutil.Error, AttributeError, NotImplementedError):
+            self._io_ok = False
+
+    def _sample_io(self, p):
+        # Disk read/write bytes (block-device level, what iostat reports) per
+        # step. io_counters() is cumulative per process; track first-seen as the
+        # baseline and sum (last - baseline) across the tree at finalize.
+        # ponytail: first-seen baseline undercounts a fresh worker's I/O in its
+        # first sample interval (~2s) but never over-counts across steps; drop to
+        # a (0,0) worker baseline if that undercount ever matters.
+        if not self._io_ok:
+            return
+        try:
+            io = p.io_counters()
+        except (psutil.Error, AttributeError, NotImplementedError):
+            self._io_ok = False  # unsupported on this platform - stop trying
+            return
+        rw = (io.read_bytes, io.write_bytes)
+        self._io_baseline.setdefault(p.pid, rw)
+        self._io_last[p.pid] = rw
+
+    def _finalize_io(self):
+        read = write = 0
+        for pid, (r0, w0) in self._io_baseline.items():
+            r1, w1 = self._io_last.get(pid, (r0, w0))
+            read += max(0, r1 - r0)   # max: guard counter reset on pid reuse
+            write += max(0, w1 - w0)
+        self.read_bytes = read
+        self.write_bytes = write
 
     def _finalize_cpu_time(self):
         # best-effort: parent's cumulative CPU time (children that already
@@ -195,26 +269,42 @@ class ResourceMonitor:
             "iso_time": _iso(self.t0 or time.time()),
             "stage": self.stage,
             "step": self.step,
+            "plate": self.plate,
+            "machine_type": self.machine_type,
+            "n_workers": self.n_workers,
             "wall_s": round(wall, 1),
             "max_rss_mb": round(self.max_rss / 1e6, 1),
             "max_vms_mb": round(self.max_vms / 1e6, 1),
             "max_cpu_pct": round(self.max_cpu, 1),
             "mean_cpu_pct": round(mean_cpu, 1),
             "cpu_time_s": self.cpu_time,
+            "read_mb": round(self.read_bytes / 1e6, 1),
+            "write_mb": round(self.write_bytes / 1e6, 1),
             "peak_nproc": self.peak_nproc,
             "n_samples": self._samples,
         }
+        header = "\t".join(COLUMNS)
         try:
             self.out.parent.mkdir(parents=True, exist_ok=True)
+            # If an existing file has a different schema (e.g. an older run
+            # without the plate/machine/workers columns), move it aside so we
+            # never append mismatched rows into one un-parseable TSV.
+            if self.out.exists():
+                with open(self.out) as f:
+                    old_header = f.readline().rstrip("\n")
+                if old_header != header:
+                    self.out.rename(self.out.with_suffix(self.out.suffix + ".oldschema.bak"))
             new = not self.out.exists()
             with open(self.out, "a") as f:
                 if new:
-                    f.write("\t".join(COLUMNS) + "\n")
+                    f.write(header + "\n")
                 f.write("\t".join(str(row[c]) for c in COLUMNS) + "\n")
         except OSError as e:
             print(f"  [monitor] could not write benchmark row: {e}", file=sys.stderr)
         print(f"  [monitor] {self.step}: peak_rss={row['max_rss_mb']}MB "
-              f"peak_cpu={row['max_cpu_pct']}% wall={row['wall_s']}s")
+              f"peak_cpu={row['max_cpu_pct']}% "
+              f"read={row['read_mb']}MB write={row['write_mb']}MB "
+              f"wall={row['wall_s']}s")
 
 
 def monitor_step(step, **kw):
@@ -222,13 +312,17 @@ def monitor_step(step, **kw):
     return ResourceMonitor(step, **kw)
 
 
-def set_benchmark_context(stage, root_fp):
+def set_benchmark_context(stage, root_fp, plate=None):
     """Point per-step benchmarks at <root_fp>/benchmarks/direct and tag rows.
 
     Call once at the top of a direct runner's main(). Honors a pre-set
     BRIEFLOW_BENCHMARK_DIR env var so the location can still be overridden.
+    ``plate`` tags every row with the plate this run processes ('' if the run
+    spans all plates). The GCP machine type is detected once and cached here.
     """
     os.environ["BRIEFLOW_STAGE"] = stage
+    os.environ["BRIEFLOW_PLATE"] = "" if plate is None else str(plate)
+    os.environ.setdefault("BRIEFLOW_MACHINE_TYPE", _detect_machine_type())
     os.environ.setdefault(
         "BRIEFLOW_BENCHMARK_DIR", str(Path(root_fp) / "benchmarks" / "direct"))
 
@@ -245,6 +339,8 @@ def _main(argv):
         description="Monitor peak RSS/CPU of a process tree for one step.")
     ap.add_argument("--label", required=True, help="Step name recorded in the TSV")
     ap.add_argument("--stage", default=None, help="Optional stage tag column")
+    ap.add_argument("--plate", default=None, help="Plate tag column")
+    ap.add_argument("--workers", type=int, default=None, help="n_workers tag column")
     ap.add_argument("--out", default=None, help="Output TSV (default: env/cwd)")
     ap.add_argument("--interval", type=float, default=None, help="Sample seconds")
     ap.add_argument("--pid", type=int, default=None,
@@ -261,7 +357,8 @@ def _main(argv):
     if cmd:
         proc = subprocess.Popen(cmd)
         mon = ResourceMonitor(args.label, pid=proc.pid, out=args.out,
-                              interval=args.interval, stage=args.stage)
+                              interval=args.interval, stage=args.stage,
+                              n_workers=args.workers, plate=args.plate)
         mon.start()
         rc = proc.wait()
         mon.stop()
@@ -272,7 +369,8 @@ def _main(argv):
             print("psutil unavailable", file=sys.stderr)
             return 1
         mon = ResourceMonitor(args.label, pid=args.pid, out=args.out,
-                              interval=args.interval, stage=args.stage)
+                              interval=args.interval, stage=args.stage,
+                              n_workers=args.workers, plate=args.plate)
         mon.start()
         try:
             while psutil.pid_exists(args.pid):
