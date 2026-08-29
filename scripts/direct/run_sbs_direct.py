@@ -619,7 +619,7 @@ def process_sbs(config, args):
         p, we, ti = r["plate"], r["well"], r["tile"]
         bases_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "bases", "tsv")
         peaks_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "peaks")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "tsv")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
         tasks.append((bases_p, peaks_p, out, cr_method))
     errs += run_parallel(tasks, _call_reads_one, w, "Call reads")
 
@@ -627,8 +627,8 @@ def process_sbs(config, args):
     tasks = []
     for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
-        reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "tsv")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "cells", "tsv")
+        reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "cells", "parquet")
         tasks.append((reads_p, out, cc_params))
     errs += run_parallel(tasks, _call_cells_one, w, "Call cells")
 
@@ -637,7 +637,7 @@ def process_sbs(config, args):
     for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         nuclei_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "sbs_info", "tsv")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "sbs_info", "parquet")
         wc = {"plate": p, "well": we, "tile": ti}
         tasks.append((nuclei_p, out, wc))
     errs += run_parallel(tasks, _extract_sbs_info_one, w, "Extract SBS info")
