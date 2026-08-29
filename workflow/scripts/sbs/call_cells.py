@@ -3,16 +3,14 @@
 Supports both single-barcode and multi-barcode protocols.
 """
 
-import pandas as pd
-
 from lib.sbs.call_cells import call_cells, load_barcode_library
-from lib.shared.parquet_io import write_parquet
+from lib.shared.parquet_io import read_table, write_parquet
 
 # Get configuration from params
 params = snakemake.params.config
 
-# Load reads data
-reads_data = pd.read_csv(snakemake.input[0], sep="\t")
+# Load reads data (parquet in a fresh DAG; read_table resolves parquet-or-tsv)
+reads_data = read_table(snakemake.input[0])
 
 # Load barcode library
 df_barcode_library = load_barcode_library(params["df_barcode_library_fp"])

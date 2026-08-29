@@ -32,7 +32,7 @@ sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 from lib.shared.file_utils import get_data_output_path, get_image_output_path, validate_dtypes
 from lib.shared.image_io import read_image, save_image
 from lib.shared.illumination_correction import apply_ic_field, combine_ic_images
-from lib.shared.parquet_io import write_parquet, read_parquets
+from lib.shared.parquet_io import write_parquet, read_parquets, read_table
 from lib.shared.combine_dfs import combine_tile_dfs
 from lib.shared.rule_utils import get_call_cells_params, get_segmentation_params, get_spot_detection_params
 from lib.shared.resource_monitor import monitor_step, set_benchmark_context
@@ -384,7 +384,7 @@ def _call_cells_one(task):
     try:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         from lib.sbs.call_cells import call_cells, load_barcode_library
-        reads = pd.read_csv(reads_path, sep="\t")
+        reads = read_table(reads_path)
         barcode_lib = load_barcode_library(cc_params["df_barcode_library_fp"])
         barcode_type = cc_params.get("barcode_type", "simple")
 
@@ -663,11 +663,12 @@ def process_sbs(config, args):
                     continue
 
                 input_paths = [
-                    sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "tsv")
+                    sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "parquet")
                     for _, tr in gdf.iterrows()
                 ]
-                # Read per-tile TSVs, concat, and normalize dtypes (shared helper).
-                # ponytail: Phase 2 will drop TSV intermediates for parquet upstream.
+                # Read per-tile intermediates (parquet-or-tsv, prefer parquet),
+                # concat, and normalize dtypes (shared helper). Production TSV-only
+                # wells resolve to .tsv; fresh parquet wells resolve to .parquet.
                 combined = combine_tile_dfs(input_paths)
                 if combined is None:
                     print(f"    WARN combine {info_type} P{plate}/W{well}: no inputs")

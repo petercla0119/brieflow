@@ -1,4 +1,5 @@
-"""Combine per-tile TSVs into one dtype-normalized pandas DataFrame.
+"""Combine per-tile intermediates (parquet-or-tsv, prefer parquet) into one
+dtype-normalized pandas DataFrame.
 
 Shared by the Snakemake combine script (workflow/scripts/shared/combine_dfs.py)
 and the direct runner (scripts/direct/run_sbs_direct.py --step combine) so the
@@ -17,6 +18,11 @@ both ways on real plate-4 well A1: round_trip==polars EXACT, and default-vs-
 polars max |diff| 1.8e-12 (reads) / 9.1e-13 (cells) / 2.3e-13 (sbs_info), all
 << rtol=1e-9. Identity tests compare float columns with np.allclose(rtol=1e-9)
 and everything else byte-exactly (see tests/sbs/test_combine_dfs_opt.py).
+
+Phase 2 (2026-08-29): inputs are now parquet-or-tsv per tile (prefer parquet
+via resolve_table_path). Parquet round-trips floats exactly, so parquet-mode
+combine is EXACT to the in-memory frame and stays within Option A vs the
+TSV-mode golden. Production TSV-only wells still combine unchanged.
 """
 
 import os
@@ -24,6 +30,7 @@ import os
 import pandas as pd
 
 from lib.shared.file_utils import validate_dtypes
+from lib.shared.parquet_io import resolve_table_path, read_parquet
 
 try:
     import polars as pl
@@ -41,6 +48,13 @@ def _header_cols(f):
         return set(fh.readline().rstrip("\n").split("\t"))
 
 
+def _cols(f, fmt):
+    """Column set for a resolved tile file, by format (for the union-missing cast)."""
+    if fmt == "parquet":
+        return set(pl.scan_parquet(f).collect_schema().names())
+    return _header_cols(f)
+
+
 def _read_concat(paths):
     """Fast multithreaded read + vertical (union) concat of per-tile TSVs.
 
@@ -52,13 +66,19 @@ def _read_concat(paths):
     back to per-file pandas reads + concat. Returns None only when no file
     yields a frame (mirrors the old `if not dfs` guard).
     """
-    nonempty = [f for f in paths if os.path.exists(f) and os.path.getsize(f) > 0]
+    resolved = []
+    for p_in in paths:
+        f, fmt = resolve_table_path(p_in)
+        if f is not None:
+            resolved.append((f, fmt))
 
-    if _HAS_POLARS and nonempty:
+    if _HAS_POLARS and resolved:
         try:
             lfs = [
-                pl.scan_csv(f, separator="\t", infer_schema_length=None)
-                for f in nonempty
+                pl.scan_parquet(f)
+                if fmt == "parquet"
+                else pl.scan_csv(f, separator="\t", infer_schema_length=None)
+                for f, fmt in resolved
             ]
             df = pl.concat(lfs, how="diagonal_relaxed").collect()
             # pandas concat reindexes frames missing a column, upcasting it to
@@ -66,7 +86,10 @@ def _read_concat(paths):
             # Int64. Replicate: cast integer union-missing columns to Float64 so
             # the fast path yields the same dtype as the pandas path.
             union_missing = {
-                c for s in map(_header_cols, nonempty) for c in df.columns if c not in s
+                c
+                for f, fmt in resolved
+                for c in df.columns
+                if c not in _cols(f, fmt)
             }
             casts = [
                 pl.col(c).cast(pl.Float64)
@@ -81,7 +104,10 @@ def _read_concat(paths):
             pass  # schema/parse error -> pandas fallback below
 
     dfs = []
-    for f in paths:
+    for f, fmt in resolved:
+        if fmt == "parquet":
+            dfs.append(read_parquet(f))  # resolver already filtered 0-byte
+            continue
         try:
             dfs.append(pd.read_csv(f, sep="\t"))
         except pd.errors.EmptyDataError:
