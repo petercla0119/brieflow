@@ -401,3 +401,338 @@ def test_projection_mapping_reads(small_frames):
         full_s, _ = plot_mapping_vs_threshold(reads.copy(), small_frames["barcodes"], var, num_thresholds=5)
         proj_s, _ = plot_mapping_vs_threshold(proj.copy(), small_frames["barcodes"], var, num_thresholds=5)
         assert full_s.equals(proj_s), f"reads projection changes plot_mapping_vs_threshold summary for {var}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2: TSV -> parquet migration for reads / cells / sbs_info.
+# resolve_table_path + read_table prefer-parquet, format-agnostic combine,
+# writer round-trip identity, shared-writer ext branch, fail-loud on corrupt
+# parquet, and the reads->cells chain link over parquet reads.
+# ─────────────────────────────────────────────────────────────────────────────
+from lib.shared.parquet_io import read_table, resolve_table_path, read_parquet
+from lib.sbs.call_cells import call_cells as _call_cells
+
+GOLDEN_DIR = Path(__file__).parent / "golden"
+BARCODE_LIB_FP = "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+_CHAIN_TILES = [
+    t for t in ("P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100")
+    if (GOLDEN_DIR / f"{t}__reads.tsv").exists()
+    and (GOLDEN_DIR / f"{t}__cells.tsv").exists()
+]
+MULTI_CC_KWARGS = dict(
+    q_min=0.0, map_start=1, map_end=12, prefix_map="prefix_map",
+    recomb_start=13, recomb_end=15, prefix_recomb="prefix_recomb",
+    recomb_filter_col="Q_recomb", recomb_q_thresh=0.1, error_correct=True,
+    sort_calls="peak", max_distance=1, n_barcodes=2, barcode_info_cols=None,
+)
+
+
+def _sample_df():
+    """A frame exercising str / int / high-precision float columns."""
+    return pd.DataFrame(
+        {
+            "well": ["A1", "A1", "A1"],
+            "tile": [2, 2, 3],
+            "cell": [1, 2, 1],
+            "area": [69, 70, 80],
+            "i": [10.533333333333333, 11.700000000000001, 12.5],
+            "barcode": ["ACGT", "TGCA", "AAAA"],
+        }
+    )
+
+
+# ─── 1. writer round-trip identity ──────────────────────────────────────────
+@pytest.mark.unit
+def test_parquet_writer_roundtrip_identity(tmp_path):
+    """write_parquet -> read_parquet is EXACT to the source frame (contrast the
+    ~1e-12 tsv text drift), and matches a tsv write/read under Option A.
+
+    Covers the reads/cells/sbs_info writer swap: parquet preserves dtypes and
+    floats bit-for-bit, so the combine-over-parquet path stays within Option A.
+    """
+    df = _sample_df()
+    pq = tmp_path / "x.parquet"
+    write_parquet(df, str(pq))
+    back = read_parquet(str(pq))
+    # parquet is EXACT (same dtypes, floats bit-identical).
+    pd.testing.assert_frame_equal(back, df, check_exact=True)
+
+    # ... and equals a tsv write+read under the Option-A float contract.
+    tsv = tmp_path / "x.tsv"
+    df.to_csv(tsv, index=False, sep="\t")
+    tsv_back = pd.read_csv(tsv, sep="\t")
+    _assert_identical(back, tsv_back)
+
+
+# ─── 2. resolve_table_path prefer-parquet ───────────────────────────────────
+@pytest.mark.unit
+def test_resolve_table_path_prefers_parquet(tmp_path):
+    """parquet+tsv -> parquet; tsv-only -> tsv; parquet-only -> parquet;
+    0-byte gated; neither -> (None, None). Candidate suffix is irrelevant."""
+    d = tmp_path
+    df = _sample_df()
+
+    # both present -> parquet wins, regardless of candidate suffix
+    write_parquet(df, str(d / "both.parquet"))
+    (d / "both.tsv").write_text("well\ttile\nA1\t2\n")
+    assert resolve_table_path(str(d / "both.tsv")) == (str(d / "both.parquet"), "parquet")
+    assert resolve_table_path(str(d / "both.parquet")) == (str(d / "both.parquet"), "parquet")
+
+    # tsv only -> tsv (even when asked with a .parquet candidate)
+    (d / "tsvonly.tsv").write_text("well\ttile\nA1\t2\n")
+    assert resolve_table_path(str(d / "tsvonly.parquet")) == (str(d / "tsvonly.tsv"), "tsv")
+
+    # parquet only -> parquet
+    write_parquet(df, str(d / "pqonly.parquet"))
+    assert resolve_table_path(str(d / "pqonly.tsv")) == (str(d / "pqonly.parquet"), "parquet")
+
+    # 0-byte parquet with a real tsv sibling -> falls through to tsv
+    (d / "zpq.parquet").write_bytes(b"")
+    (d / "zpq.tsv").write_text("well\ttile\nA1\t2\n")
+    assert resolve_table_path(str(d / "zpq.parquet")) == (str(d / "zpq.tsv"), "tsv")
+
+    # neither present -> (None, None)
+    assert resolve_table_path(str(d / "missing.parquet")) == (None, None)
+    # both 0-byte -> (None, None)
+    (d / "z2.parquet").write_bytes(b"")
+    (d / "z2.tsv").write_bytes(b"")
+    assert resolve_table_path(str(d / "z2.parquet")) == (None, None)
+
+
+# ─── 3. read_table format-agnostic ──────────────────────────────────────────
+@pytest.mark.unit
+def test_read_table_format_agnostic(tmp_path):
+    """parquet-present and tsv-only both read to equal frames; missing raises."""
+    df = _sample_df()
+
+    # parquet present -> exact frame back
+    write_parquet(df, str(tmp_path / "a.parquet"))
+    pq_frame = read_table(str(tmp_path / "a.tsv"))  # candidate suffix ignored
+    pd.testing.assert_frame_equal(pq_frame, df, check_exact=True)
+
+    # tsv only -> equals the same frame under Option A
+    df.to_csv(tmp_path / "b.tsv", index=False, sep="\t")
+    tsv_frame = read_table(str(tmp_path / "b.parquet"))
+    _assert_identical(tsv_frame, df)
+
+    # neither sibling -> FileNotFoundError (call_cells must not silently skip)
+    with pytest.raises(FileNotFoundError):
+        read_table(str(tmp_path / "nope.parquet"))
+    # 0-byte only -> also FileNotFoundError
+    (tmp_path / "empty.tsv").write_bytes(b"")
+    with pytest.raises(FileNotFoundError):
+        read_table(str(tmp_path / "empty.parquet"))
+
+
+# ─── 4. format-agnostic combine: parquet-only fast path ─────────────────────
+@pytest.mark.unit
+def test_combine_parquet_only_uses_polars_fast_path(tmp_path):
+    """>=2 parquet tiles combine via the polars fast path (zero fallback)."""
+    if not _HAS_POLARS:
+        pytest.skip("polars not installed")
+    from lib.shared import combine_dfs as _cd
+
+    hdr_df1 = pd.DataFrame({"well": ["A1"], "tile": [2], "cell": [1], "i": [10.5333333333]})
+    hdr_df2 = pd.DataFrame({"well": ["A1"], "tile": [3], "cell": [1], "i": [20.7000000001]})
+    t1 = tmp_path / "1"; t1.mkdir(); write_parquet(hdr_df1, str(t1 / "reads.parquet"))
+    t2 = tmp_path / "2"; t2.mkdir(); write_parquet(hdr_df2, str(t2 / "reads.parquet"))
+    cands = [str(t1 / "reads.parquet"), str(t2 / "reads.parquet")]
+
+    _cd._READ_STATS["polars"] = 0
+    _cd._READ_STATS["pandas_fallback"] = 0
+    out = _cd.combine_tile_dfs(cands)
+    assert out is not None and len(out) == 2
+    assert _cd._READ_STATS["polars"] == 1, _cd._READ_STATS
+    assert _cd._READ_STATS["pandas_fallback"] == 0, _cd._READ_STATS
+
+
+@pytest.mark.unit
+def test_combine_tsv_only_via_parquet_candidate(tmp_path):
+    """Passing .parquet candidates for a TSV-only well still combines via tsv
+    (the production backward-compat path: no parquet sibling exists)."""
+    hdr = ["well", "tile", "cell", "i"]
+    t1 = tmp_path / "1"; t1.mkdir()
+    _write_tsv(t1 / "reads.tsv", hdr, [["A1", 2, 1, 10.5]])
+    t2 = tmp_path / "2"; t2.mkdir()
+    _write_tsv(t2 / "reads.tsv", hdr, [["A1", 3, 1, 20.7]])
+    cands = [str(t1 / "reads.parquet"), str(t2 / "reads.parquet")]  # no parquet on disk
+    tsvs = [str(t1 / "reads.tsv"), str(t2 / "reads.tsv")]
+    _assert_identical(combine_tile_dfs(cands), _reference_combine(tsvs))
+
+
+# ─── mixed well + union-missing cast ────────────────────────────────────────
+@pytest.mark.unit
+def test_combine_mixed_well_union_and_cast(tmp_path):
+    """Mixed well: tile_a parquet (no `plate`), tile_b tsv (int `plate`),
+    tile_c 0-byte. Union keeps `plate`, drops the empty tile, and the
+    integer union-missing column is upcast to float (matching pandas concat)."""
+    hdr7 = ["well", "tile", "cell", "area", "i"]
+    hdr8 = hdr7 + ["plate"]
+    a_df = pd.DataFrame(
+        {"well": ["A1"], "tile": [2], "cell": [1], "area": [69], "i": [10.5333333333]}
+    )
+    ta = tmp_path / "a"; ta.mkdir()
+    write_parquet(a_df, str(ta / "reads.parquet"))     # parquet for combine
+    _write_tsv(ta / "reads.tsv", hdr7, [["A1", 2, 1, 69, 10.5333333333]])  # tsv for reference
+
+    tb = tmp_path / "b"; tb.mkdir()
+    _write_tsv(tb / "reads.tsv", hdr8, [["A1", 3, 1, 80, 12.5, 4]])  # tsv only
+
+    tc = tmp_path / "c"; tc.mkdir()
+    (tc / "reads.tsv").write_bytes(b"")  # 0-byte -> dropped
+
+    cands = [str(ta / "reads.parquet"), str(tb / "reads.parquet"), str(tc / "reads.parquet")]
+    tsvs = [str(ta / "reads.tsv"), str(tb / "reads.tsv"), str(tc / "reads.tsv")]
+
+    new = combine_tile_dfs(cands)
+    _assert_identical(new, _reference_combine(tsvs))
+    assert "plate" in new.columns
+    assert len(new) == 2  # 0-byte tile dropped
+    # union-missing cast fires (Float64 intermediate); validate_dtypes then
+    # lands the integer-valued column on nullable Int64 -- same as the pandas
+    # concat path (dtype parity is already asserted vs reference above).
+    assert isinstance(new["plate"].dtype, pd.Int64Dtype), new.dtypes["plate"]
+    assert new["plate"].isna().sum() == 1  # the parquet tile row (no `plate`)
+
+
+# ─── 7. fail-loud on corrupt parquet ────────────────────────────────────────
+@pytest.mark.unit
+def test_combine_corrupt_parquet_raises(tmp_path):
+    """A truncated/garbage .parquet tile must make combine RAISE (not silently
+    drop it), mirroring the corrupt-tsv fail-loud guard. resolve_table_path sees
+    a non-empty file; both the polars fast path and the pandas fallback error out
+    on the bad bytes and the error propagates."""
+    good_df = pd.DataFrame({"well": ["A1"], "tile": [2], "cell": [1]})
+    tg = tmp_path / "good"; tg.mkdir()
+    write_parquet(good_df, str(tg / "reads.parquet"))
+    tb = tmp_path / "bad"; tb.mkdir()
+    (tb / "reads.parquet").write_bytes(b"PAR1 not a real parquet file \x00\x01\x02")
+    cands = [str(tg / "reads.parquet"), str(tb / "reads.parquet")]
+    with pytest.raises(Exception):
+        combine_tile_dfs(cands)
+
+
+# ─── 6. phenotype safety: shared writer keeps .tsv (byte-identical) ─────────
+@pytest.mark.unit
+def test_shared_writer_ext_branch_keeps_phenotype_tsv(tmp_path, monkeypatch):
+    """Run the SHARED extract_phenotype_minimal.py script: a `.tsv` output stays
+    byte-identical to df.to_csv (phenotype path); a `.parquet` output becomes
+    parquet (SBS sbs_info path). Guards Assumption-1 in the spec."""
+    import lib.shared.extract_phenotype_minimal as epm_mod
+    import lib.shared.image_io as img_mod
+
+    df = pd.DataFrame(
+        {"well": ["A1", "A1"], "tile": [0, 0], "cell": [1, 2],
+         "i": [1.5, 2.25], "j": [3.5, 4.75]}
+    )
+    monkeypatch.setattr(epm_mod, "extract_phenotype_minimal", lambda **k: df.copy())
+    monkeypatch.setattr(img_mod, "read_image", lambda p: np.zeros((2, 2)))
+
+    script = WORKFLOW / "scripts" / "shared" / "extract_phenotype_minimal.py"
+    src = compile(script.read_text(), str(script), "exec")
+
+    class _SM:
+        pass
+
+    # phenotype: .tsv output -> byte-identical to plain to_csv, and NOT parquet
+    sm = _SM()
+    sm.input = [str(tmp_path / "nuc.tiff")]
+    sm.output = [str(tmp_path / "phenotype_info.tsv")]
+    sm.wildcards = {"row": "A", "col": "1", "tile": "0"}
+    exec(src, {"snakemake": sm})
+    tsv_bytes = Path(sm.output[0]).read_text()
+    assert tsv_bytes == df.to_csv(index=False, sep="\t")
+    with pytest.raises(Exception):
+        pd.read_parquet(sm.output[0])  # it's text, not parquet
+
+    # SBS: .parquet output -> real parquet
+    sm2 = _SM()
+    sm2.input = [str(tmp_path / "nuc.tiff")]
+    sm2.output = [str(tmp_path / "sbs_info.parquet")]
+    sm2.wildcards = {"row": "A", "col": "1", "tile": "0"}
+    exec(src, {"snakemake": sm2})
+    back = pd.read_parquet(sm2.output[0])
+    pd.testing.assert_frame_equal(back, df, check_exact=True)
+
+
+# ─── 5 + integration: real plate-4 write->combine in parquet mode ───────────
+@pytest.mark.integration
+@pytest.mark.skipif(not TSV_WELL.exists(), reason="plate-4 tsvs unavailable")
+@pytest.mark.parametrize("info", ["reads", "cells", "sbs_info"])
+def test_integration_parquet_mode_matches_tsv_reference(info, tmp_path):
+    """Small-FOV e2e: materialize real plate-4 subset tiles as parquet, combine
+    over the parquet copies, and assert the result matches _reference_combine
+    over the original on-disk .tsv tiles under Option A."""
+    cands = []
+    tsv_paths = []
+    n_written = 0
+    for t in INTEG_TILES:
+        src_tsv = TSV_WELL / str(t) / f"{info}.tsv"
+        if not src_tsv.exists():
+            continue
+        tsv_paths.append(str(src_tsv))
+        td = tmp_path / str(t)
+        td.mkdir(parents=True, exist_ok=True)
+        cands.append(str(td / f"{info}.parquet"))
+        try:
+            frame = pd.read_csv(src_tsv, sep="\t")
+        except pd.errors.EmptyDataError:
+            continue  # 0-byte tile: leave no parquet -> resolver drops it (matches ref)
+        write_parquet(frame, str(td / f"{info}.parquet"))
+        n_written += 1
+
+    assert n_written >= 3, f"expected >=3 non-empty {info} tiles, wrote {n_written}"
+    parquet_combined = combine_tile_dfs(cands)
+    reference = _reference_combine(tsv_paths)
+    _assert_identical(parquet_combined, reference)
+    # cross-check: parquet-mode == tsv-mode of the SAME tiles (both via combine)
+    _assert_identical(parquet_combined, combine_tile_dfs(tsv_paths))
+
+
+# ─── 4. call_cells chain integrity over parquet reads ───────────────────────
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not _CHAIN_TILES or not Path(BARCODE_LIB_FP).exists(),
+    reason="golden reads/cells tiles or barcode library unavailable",
+)
+def test_call_cells_chain_over_parquet_reads(tmp_path):
+    """The reads->cells chain link: reads written as parquet, read back via
+    read_table, produces cells identical to the TSV-fed pipeline (golden).
+
+    Gentle: one tile. First proves read_table(parquet) == pd.read_csv(tsv)
+    exactly (the only changed line in the chain), then runs call_cells once on
+    the parquet-fed reads and matches the golden cells under Option A.
+    """
+    tile = _CHAIN_TILES[0]
+    reads_tsv = pd.read_csv(GOLDEN_DIR / f"{tile}__reads.tsv", sep="\t")
+    pq = tmp_path / "reads.parquet"
+    write_parquet(reads_tsv, str(pq))
+
+    # chain link: read_table must reconstruct the exact reads frame from parquet
+    reads_via_read_table = read_table(str(tmp_path / "reads.tsv"))  # candidate suffix ignored
+    pd.testing.assert_frame_equal(reads_via_read_table, reads_tsv, check_exact=True)
+
+    barcode_lib = pd.read_csv(BARCODE_LIB_FP, sep="\t")
+    cells = _call_cells(
+        reads_data=reads_via_read_table, df_barcode_library=barcode_lib.copy(),
+        **MULTI_CC_KWARGS,
+    )
+    golden = pd.read_csv(GOLDEN_DIR / f"{tile}__cells.tsv", sep="\t")
+    key = ["well", "tile", "cell"]
+    got = cells.sort_values(key).reset_index(drop=True)
+    exp = golden.sort_values(key).reset_index(drop=True)
+    assert got.shape == exp.shape, f"shape {got.shape} vs golden {exp.shape}"
+    assert set(got.columns) == set(exp.columns)
+    for c in exp.columns:
+        g, e = got[c], exp[c]
+        assert (g.isna() == e.isna()).all(), f"NA positions differ in {c}"
+        if pd.api.types.is_float_dtype(e):
+            np.testing.assert_allclose(
+                g.astype(float).to_numpy(), e.astype(float).to_numpy(),
+                rtol=1e-6, atol=0.0, equal_nan=True,
+            )
+        else:
+            m = ~e.isna()
+            assert (g[m].astype(str).to_numpy() == e[m].astype(str).to_numpy()).all(), (
+                f"non-float column {c} differs"
+            )
