@@ -80,6 +80,39 @@ def read_parquets(
         return pd.concat(dfs, ignore_index=True)
 
 
+def resolve_table_path(path):
+    """Resolve a per-tile intermediate path to the on-disk file to read,
+    preferring parquet over its tsv sibling.
+
+    `path` may be given with either a .parquet or .tsv suffix. Checks the
+    .parquet sibling first, then .tsv. A file counts only if it exists AND is
+    non-empty (size > 0), matching the 0-byte skip semantics of the combine
+    fallback. Returns (str_path, "parquet"|"tsv") or (None, None) if neither
+    sibling has content.
+    """
+    base = Path(path)
+    for suffix, fmt in ((".parquet", "parquet"), (".tsv", "tsv")):
+        cand = base.with_suffix(suffix)
+        if cand.exists() and cand.stat().st_size > 0:
+            return str(cand), fmt
+    return None, None
+
+
+def read_table(path):
+    """Read a per-tile intermediate as a pandas DataFrame, preferring parquet
+    over its tsv sibling (via resolve_table_path). Raises FileNotFoundError if
+    neither sibling has content. parquet -> read_parquet(); tsv -> pd.read_csv
+    (sep tab)."""
+    resolved, fmt = resolve_table_path(path)
+    if resolved is None:
+        raise FileNotFoundError(
+            f"No non-empty parquet or tsv sibling found for {path}"
+        )
+    if fmt == "parquet":
+        return read_parquet(resolved)
+    return pd.read_csv(resolved, sep="	")
+
+
 def write_parquet(
     df: pd.DataFrame,
     path: Union[str, Path],
