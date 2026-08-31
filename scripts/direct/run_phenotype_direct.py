@@ -627,7 +627,7 @@ def process_phenotype(config, args):
             "wildcards": {"plate": p, "well": we, "tile": ti},
         }
         tasks.append((aligned, nuclei, cells_p, cyto, out, params))
-    errs += run_parallel(tasks, _extract_phenotype_one, min(w, 16), "Extract phenotype")
+    errs += run_parallel(tasks, _extract_phenotype_one, min(w, 96), "Extract phenotype")
 
     # --- Step 7: Combine phenotype info (per well) ---
     # ponytail shim #3: gate combine/eval (steps 7-10) to post-seg so `--step segment` (GPU box)
