@@ -17,6 +17,13 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+# Cap BLAS/OMP threads before numpy import (per-process). Each ProcessPoolExecutor
+# worker otherwise spawns ~ncores BLAS threads -> workers*ncores oversubscription that
+# thrashes CPU/RAM; setdefault keeps it overridable per run. GPU seg workers re-raise
+# via _worker_init_gpu. Matches run_phenotype_direct.py.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import numpy as np
 import pandas as pd
 import yaml
