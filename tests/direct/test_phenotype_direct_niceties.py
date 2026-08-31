@@ -34,6 +34,8 @@ _stub("lib.shared.parquet_io", write_parquet=lambda df, p: df.to_parquet(p),
 _stub("lib.shared.rule_utils", get_alignment_params=lambda *a, **k: {},
       get_segmentation_params=lambda *a, **k: {})
 
+_stub("lib.shared.resource_monitor", monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(), set_benchmark_context=lambda *a, **k: None)  # ponytail: nullcontext stub; real context manager is only needed when the step actually runs
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
 import run_phenotype_direct as rpd  # noqa: E402
 
