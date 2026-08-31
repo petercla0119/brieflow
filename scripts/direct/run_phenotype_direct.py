@@ -131,7 +131,7 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with monitor_step(label), ProcessPoolExecutor(max_workers=workers, mp_context=_MP, initializer=initializer, initargs=initargs) as pool:
+    with monitor_step(label, n_workers=workers), ProcessPoolExecutor(max_workers=workers, mp_context=_MP, initializer=initializer, initargs=initargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -795,7 +795,7 @@ def main():
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
-    set_benchmark_context("phenotype", config["all"]["root_fp"])
+    set_benchmark_context("phenotype", config["all"]["root_fp"], plate=args.plate_filter)
     if args.gpu:
         config.setdefault("phenotype", {})["gpu"] = True
     fmt = config.get("all", {}).get("image_format", "tiff")
