@@ -148,7 +148,7 @@ def run_parallel(tasks, fn, workers, label, max_tasks_per_child=None):
         import multiprocessing as _mp
         pool_kwargs["mp_context"] = _mp.get_context("spawn")
         pool_kwargs["max_tasks_per_child"] = max_tasks_per_child
-    with monitor_step(label), ProcessPoolExecutor(**pool_kwargs) as pool:
+    with monitor_step(label, n_workers=workers), ProcessPoolExecutor(**pool_kwargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -459,7 +459,7 @@ def main():
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
-    set_benchmark_context("preprocess", config["all"]["root_fp"])
+    set_benchmark_context("preprocess", config["all"]["root_fp"], plate=args.plate_filter)
     img_fmt = config.get("all", {}).get("image_format", "tiff")
 
     print(f"{'#' * 60}")

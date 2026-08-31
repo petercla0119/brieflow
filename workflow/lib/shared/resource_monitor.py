@@ -48,8 +48,17 @@ COLUMNS = [
     "iso_time", "stage", "step", "plate", "machine_type", "n_workers",
     "wall_s", "max_rss_mb", "max_vms_mb",
     "max_cpu_pct", "mean_cpu_pct", "cpu_time_s", "read_mb", "write_mb",
-    "peak_nproc", "n_samples",
+    "peak_nproc",
+    # GPU: nvidia-smi sampled on the same tick. gpu_count=0 (blank cols) off-GPU.
+    # gpu_pct is fleet-mean util (mean across all GPUs) — peak fleet-mean near
+    # 100/gpu_count means only ~1 GPU busy, i.e. paying for idle GPUs.
+    "gpu_count", "max_gpu_pct", "mean_gpu_pct", "max_gpu_mem_mb",
+    "n_samples",
 ]
+
+# nvidia-smi path resolved once; None => no GPU tooling, GPU sampling skipped.
+import shutil
+_NVIDIA_SMI = shutil.which("nvidia-smi")
 
 _DEFAULT_INTERVAL = float(os.environ.get("BRIEFLOW_MONITOR_INTERVAL", "2.0"))
 
@@ -116,6 +125,13 @@ class ResourceMonitor:
         self.peak_nproc = 0
         self.cpu_time = 0.0
         self.t0 = None
+        # GPU accumulators (populated only when nvidia-smi is present)
+        self.gpu_count = 0
+        self.max_gpu = 0.0       # peak fleet-mean util %
+        self._gpu_sum = 0.0
+        self._gpu_samples = 0
+        self.max_gpu_mem = 0.0   # peak total mem used across GPUs (MB)
+        self._gpu_ok = _NVIDIA_SMI is not None
 
     # -- context manager -----------------------------------------------------
     def __enter__(self):
@@ -212,6 +228,42 @@ class ResourceMonitor:
         self.peak_nproc = max(self.peak_nproc, n)
         self._cpu_sum += cpu
         self._samples += 1
+        self._sample_gpu()
+
+    def _sample_gpu(self):
+        # One nvidia-smi call per tick (~2s) — negligible next to a GPU step.
+        # Records fleet-mean util and total mem used across all visible GPUs.
+        # ponytail: node-wide (all GPUs on the box), not scoped to this PID's
+        # CUDA context — fine for a dedicated single-step GPU VM; scope via
+        # nvidia-smi pmon if a box ever runs concurrent GPU jobs.
+        if not self._gpu_ok:
+            return
+        import subprocess
+        try:
+            out = subprocess.run(
+                [_NVIDIA_SMI,
+                 "--query-gpu=utilization.gpu,memory.used",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            self._gpu_ok = False  # smi vanished/hung — stop trying
+            return
+        utils, mem_total = [], 0.0
+        for line in out.splitlines():
+            try:
+                u, m = line.split(",")
+                utils.append(float(u))
+                mem_total += float(m)
+            except ValueError:
+                continue
+        if not utils:
+            return
+        self.gpu_count = max(self.gpu_count, len(utils))
+        fleet_mean = sum(utils) / len(utils)
+        self.max_gpu = max(self.max_gpu, fleet_mean)
+        self._gpu_sum += fleet_mean
+        self._gpu_samples += 1
+        self.max_gpu_mem = max(self.max_gpu_mem, mem_total)
 
     def _prime_root_io(self):
         # Baseline the root process's disk counters at step start so I/O done
@@ -281,6 +333,10 @@ class ResourceMonitor:
             "read_mb": round(self.read_bytes / 1e6, 1),
             "write_mb": round(self.write_bytes / 1e6, 1),
             "peak_nproc": self.peak_nproc,
+            "gpu_count": self.gpu_count,
+            "max_gpu_pct": round(self.max_gpu, 1),
+            "mean_gpu_pct": round(self._gpu_sum / self._gpu_samples, 1) if self._gpu_samples else 0.0,
+            "max_gpu_mem_mb": round(self.max_gpu_mem, 1),
             "n_samples": self._samples,
         }
         header = "\t".join(COLUMNS)
@@ -301,10 +357,12 @@ class ResourceMonitor:
                 f.write("\t".join(str(row[c]) for c in COLUMNS) + "\n")
         except OSError as e:
             print(f"  [monitor] could not write benchmark row: {e}", file=sys.stderr)
+        gpu = (f"gpu={row['max_gpu_pct']}%x{row['gpu_count']} "
+               f"gpu_mem={row['max_gpu_mem_mb']}MB " if row["gpu_count"] else "")
         print(f"  [monitor] {self.step}: peak_rss={row['max_rss_mb']}MB "
               f"peak_cpu={row['max_cpu_pct']}% "
               f"read={row['read_mb']}MB write={row['write_mb']}MB "
-              f"wall={row['wall_s']}s")
+              f"{gpu}wall={row['wall_s']}s")
 
 
 def monitor_step(step, **kw):

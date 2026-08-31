@@ -378,7 +378,7 @@ def main():
     if cfg.get("approach", "fast") != "fast":
         raise SystemExit(f"run_merge_direct only implements the fast chain; config approach={cfg.get('approach')}")
     out_root = Path(config["all"]["root_fp"])
-    set_benchmark_context("merge", out_root)
+    set_benchmark_context("merge", out_root, plate=args.plate_filter)
 
     combo_fp = cfg.get("merge_combo_fp", "config/merge_combo.tsv")
     combos = pd.read_csv(combo_fp, sep="\t")
