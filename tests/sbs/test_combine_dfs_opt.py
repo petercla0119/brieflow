@@ -109,6 +109,54 @@ def _assert_identical(new, ref, float_rtol=1e-9):
         )
 
 
+def _norm_nullable(df):
+    """Downcast pandas nullable Int64/Float64 to numpy int64/float64 (no nulls).
+
+    A 0-row header-only TSV tile is read as object columns, which
+    ``validate_dtypes`` upcasts to nullable ``Int64``/``Float64``. Parquet tiles
+    are typed, so the parquet fast path yields plain ``int64``/``float64``. The
+    VALUES are identical and the difference vanishes on parquet write (the
+    shipped artifact is int64 either way -- see test_golden_sbs_info_full_well,
+    where combine->write->read matches the on-disk golden exactly). Normalize so
+    the dtype comparison reflects real output rather than the transient artifact.
+    """
+    out = df.copy()
+    for c in out.columns:
+        dt = str(out[c].dtype)
+        if dt == "Int64" and out[c].notna().all():
+            out[c] = out[c].astype("int64")
+        elif dt == "Float64":
+            out[c] = out[c].astype("float64")
+    return out
+
+
+def _parse_bounds(v):
+    """Bounds as a list of ints from either the new parquet list/array or the
+    old garbled TSV string ``"(a, b, c, d)"``."""
+    if isinstance(v, str):
+        inner = v.strip().lstrip("([").rstrip(")]")
+        return [int(x) for x in inner.replace(" ", "").split(",") if x != ""]
+    return [int(x) for x in v]
+
+
+def _assert_parquet_matches_tsv(new, ref):
+    """Parquet-mode combine vs the original TSV reference, under the migrated
+    contract: same columns/order, same numbers, dtypes equal after nullable
+    normalization, and ``bounds`` compared by value (parquet keeps a native int
+    list; the old TSV form is a garbled string -- user-approved migration, the
+    numbers are unchanged)."""
+    assert list(new.columns) == list(ref.columns), (
+        f"column mismatch: {list(new.columns)} vs {list(ref.columns)}"
+    )
+    if "bounds" in new.columns:
+        nb = [_parse_bounds(v) for v in new["bounds"]]
+        rb = [_parse_bounds(v) for v in ref["bounds"]]
+        assert nb == rb, "bounds numbers differ between parquet list and tsv string"
+        new = new.drop(columns=["bounds"])
+        ref = ref.drop(columns=["bounds"])
+    _assert_identical(_norm_nullable(new), _norm_nullable(ref))
+
+
 def _write_tsv(path, header, rows):
     lines = ["\t".join(str(h) for h in header)]
     for r in rows:
@@ -684,9 +732,13 @@ def test_integration_parquet_mode_matches_tsv_reference(info, tmp_path):
     assert n_written >= 3, f"expected >=3 non-empty {info} tiles, wrote {n_written}"
     parquet_combined = combine_tile_dfs(cands)
     reference = _reference_combine(tsv_paths)
-    _assert_identical(parquet_combined, reference)
-    # cross-check: parquet-mode == tsv-mode of the SAME tiles (both via combine)
-    _assert_identical(parquet_combined, combine_tile_dfs(tsv_paths))
+    # Migrated contract: parquet tiles are typed, so the fast path yields clean
+    # int64 (vs the header-only-tile Int64 artifact of the TSV pandas path) and
+    # preserves `bounds` as a native int list (vs the old garbled string). Same
+    # columns, order, and numbers; the shipped parquet is identical either way.
+    _assert_parquet_matches_tsv(parquet_combined, reference)
+    # cross-check: parquet-mode == tsv-mode of the SAME tiles, same contract.
+    _assert_parquet_matches_tsv(parquet_combined, combine_tile_dfs(tsv_paths))
 
 
 # ─── 4. call_cells chain integrity over parquet reads ───────────────────────
@@ -736,3 +788,98 @@ def test_call_cells_chain_over_parquet_reads(tmp_path):
             assert (g[m].astype(str).to_numpy() == e[m].astype(str).to_numpy()).all(), (
                 f"non-float column {c} differs"
             )
+
+
+# ─── regression: bounds migration + empty-parquet-tile handling ─────────────
+@pytest.mark.unit
+def test_parquet_bounds_preserved_as_list(tmp_path):
+    """sbs_info combined from parquet tiles keeps ``bounds`` as a native int
+    list, and write->read stores it as a parquet List (not a string).
+
+    Regression for the old glitch: the ndarray bbox came out of the parquet
+    fast path and was flattened to ``str(ndarray)`` by validate_dtypes, so the
+    combined file wrote a garbled string. User-approved migration: bounds is a
+    clean int list; the numbers are unchanged.
+    """
+    if not _HAS_POLARS:
+        pytest.skip("polars not installed")
+    import pyarrow.parquet as pq
+
+    tiles = []
+    for t, base in [(1, 10), (2, 20)]:
+        df = pd.DataFrame(
+            {
+                "area": [base, base + 1],
+                "cell": [1, 2],
+                "bounds": [
+                    np.array([base, base + 1, base + 2, base + 3]),
+                    np.array([base + 4, base + 5, base + 6, base + 7]),
+                ],
+                "tile": [t, t],
+                "well": ["A1", "A1"],
+                "plate": [1, 1],
+            }
+        )
+        p = tmp_path / f"{t}.parquet"
+        write_parquet(df, str(p))
+        tiles.append(str(p))
+
+    combined = combine_tile_dfs(tiles)
+    # in-memory: bounds cells are int sequences, never strings
+    assert not any(isinstance(b, str) for b in combined["bounds"]), (
+        f"bounds regressed to string: {combined['bounds'].tolist()}"
+    )
+    assert [int(x) for x in combined["bounds"].iloc[0]] == [10, 11, 12, 13]
+    # on-disk: parquet stores bounds as a List column, not a string
+    out = tmp_path / "sbs_info.parquet"
+    write_parquet(combined, str(out))
+    btype = str(pq.read_schema(out).field("bounds").type)
+    assert "list" in btype, f"bounds should be a parquet list, got {btype}"
+
+
+@pytest.mark.unit
+def test_fast_path_skips_empty_parquet_tile_and_completes_union(tmp_path):
+    """A 0-row parquet tile with a stale, fuller schema (an extra column):
+
+    * the fast path SKIPS it, so its String-inferred columns can't poison the
+      List-typed ``bounds`` concat (the bug that silently forced the pandas
+      fallback for sbs_info), and
+    * its unique column still surfaces as an all-null object column, matching a
+      pandas union concat.
+    """
+    if not _HAS_POLARS:
+        pytest.skip("polars not installed")
+    from lib.shared import combine_dfs as _cd
+
+    for t, v in [(1, 5), (2, 7)]:
+        df = pd.DataFrame(
+            {
+                "cell": [1, 2],
+                "tile": [t, t],
+                "well": ["A1", "A1"],
+                "bounds": [
+                    np.array([v, v + 1, v + 2, v + 3]),
+                    np.array([v + 4, v + 5, v + 6, v + 7]),
+                ],
+                "plate": [1, 1],
+            }
+        )
+        write_parquet(df, str(tmp_path / f"{t}.parquet"))
+    empty = pd.DataFrame(
+        {"cell": [], "tile": [], "well": [], "bounds": [], "plate": [], "gene_id": []}
+    )
+    write_parquet(empty, str(tmp_path / "0.parquet"))
+    paths = [str(tmp_path / f"{t}.parquet") for t in (0, 1, 2)]
+
+    _cd._READ_STATS["polars"] = 0
+    _cd._READ_STATS["pandas_fallback"] = 0
+    combined = combine_tile_dfs(paths)
+    assert _cd._READ_STATS["polars"] == 1, _cd._READ_STATS
+    assert _cd._READ_STATS["pandas_fallback"] == 0, _cd._READ_STATS
+    assert len(combined) == 4
+    # unique column from the empty tile is preserved, all-null
+    assert "gene_id" in combined.columns
+    assert combined["gene_id"].isna().all()
+    # bounds survived as int lists despite the empty-tile skip
+    assert not any(isinstance(b, str) for b in combined["bounds"])
+    assert [int(x) for x in combined["bounds"].iloc[0]] == [5, 6, 7, 8]

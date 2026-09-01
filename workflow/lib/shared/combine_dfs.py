@@ -27,6 +27,7 @@ TSV-mode golden. Production TSV-only wells still combine unchanged.
 
 import os
 
+import numpy as np
 import pandas as pd
 
 from lib.shared.file_utils import validate_dtypes
@@ -43,16 +44,12 @@ except ImportError:
 _READ_STATS = {"polars": 0, "pandas_fallback": 0}
 
 
-def _header_cols(f):
-    with open(f) as fh:
-        return set(fh.readline().rstrip("\n").split("\t"))
-
-
-def _cols(f, fmt):
-    """Column set for a resolved tile file, by format (for the union-missing cast)."""
+def _col_list(f, fmt):
+    """Ordered column names for a resolved tile file, by format."""
     if fmt == "parquet":
-        return set(pl.scan_parquet(f).collect_schema().names())
-    return _header_cols(f)
+        return list(pl.scan_parquet(f).collect_schema().names())
+    with open(f) as fh:
+        return fh.readline().rstrip("\n").split("\t")
 
 
 def _read_concat(paths):
@@ -76,22 +73,39 @@ def _read_concat(paths):
 
     if _HAS_POLARS and resolved:
         try:
+            import pyarrow.parquet as pq
+
+            def _is_empty(f, fmt):
+                # Skip ONLY 0-row parquet tiles: their object columns infer as
+                # String, which poisons a List-typed column (sbs_info "bounds")
+                # in the diagonal concat (polars cannot cast List <-> String, so
+                # the whole fast path throws). Skipping them lets the parquet
+                # fast path run and preserves bounds as a native List(Int64).
+                # Empty TSV tiles are deliberately NOT skipped: leaving them in
+                # makes the fast path poison (empty String cols vs typed data)
+                # and fall back to per-file pandas, which reproduces the ORIGINAL
+                # TSV combine's dtypes exactly (a 0-row TSV tile's object cols
+                # -> Int64 via validate_dtypes). Parquet tiles are typed, so no
+                # such upcast -- hence parquet mode yields clean int64.
+                return fmt == "parquet" and pq.ParquetFile(f).metadata.num_rows == 0
+
+            kept = [(fp, fm) for fp, fm in resolved if not _is_empty(fp, fm)]
+            if not kept:
+                raise ValueError("no non-empty frames")  # -> pandas fallback
             lfs = [
-                pl.scan_parquet(f)
-                if fmt == "parquet"
-                else pl.scan_csv(f, separator="\t", infer_schema_length=None)
-                for f, fmt in resolved
+                pl.scan_parquet(fp)
+                if fm == "parquet"
+                else pl.scan_csv(fp, separator="\t", infer_schema_length=None)
+                for fp, fm in kept
             ]
             df = pl.concat(lfs, how="diagonal_relaxed").collect()
-            # pandas concat reindexes frames missing a column, upcasting it to
-            # float(nullable); validate_dtypes then lands integer-valued ones on
-            # Int64. Replicate: cast integer union-missing columns to Float64 so
-            # the fast path yields the same dtype as the pandas path.
-            # _cols is one footer/header read per file; hoist it so the
-            # union scan stays O(files), not O(files x columns).
-            file_cols = [_cols(f, fmt) for f, fmt in resolved]
+            # A column is NaN-filled (float upcast) in pandas only when a
+            # ROW-CONTRIBUTING tile lacks it; a 0-row tile injects no NaN. So
+            # compute union_missing from the non-empty (kept) tiles only, else a
+            # header-only tile missing e.g. `plate` would wrongly upcast it.
+            kept_cols = [set(_col_list(fp, fm)) for fp, fm in kept]
             union_missing = {
-                c for s in file_cols for c in df.columns if c not in s
+                c for s in kept_cols for c in df.columns if c not in s
             }
             casts = [
                 pl.col(c).cast(pl.Float64)
@@ -100,8 +114,25 @@ def _read_concat(paths):
             ]
             if casts:
                 df = df.with_columns(casts)
+            # Column order == pandas first-appearance order across ALL tiles
+            # (empty tiles still contribute their columns/order in pandas).
+            file_col_lists = [_col_list(fp, fm) for fp, fm in resolved]
+            ordered_union = list(
+                dict.fromkeys(c for cols in file_col_lists for c in cols)
+            )
+            df = df.select([c for c in ordered_union if c in df.columns])
+            result = df.to_pandas()
+            # A column declared only by a skipped (0-row) tile -- e.g. a stale,
+            # fuller schema in an empty-FOV placeholder -- is absent from the
+            # data concat. pandas keeps it as an all-null object column; mirror
+            # that so the union is complete and byte-identical to the reference.
+            missing = [c for c in ordered_union if c not in result.columns]
+            for c in missing:
+                result[c] = pd.Series([None] * len(result), dtype="object")
+            if missing:
+                result = result[ordered_union]
             _READ_STATS["polars"] += 1
-            return df.to_pandas()
+            return result
         except Exception:
             pass  # schema/parse error -> pandas fallback below
 
@@ -135,11 +166,31 @@ def combine_tile_dfs(paths):
     if combined is None:
         return None
 
+    # Columns holding a per-row array/list (e.g. sbs_info "bounds", a regionprops
+    # bbox that comes out of the parquet fast path as an ndarray) are not scalar:
+    # validate_dtypes' astype("string") would flatten each cell to its ndarray
+    # repr, and the to_numeric sweep can't touch it. Set such columns aside,
+    # normalize the scalar columns, then restore them unchanged so write_parquet
+    # stores them as a native List column instead of a mangled string.
+    orig_order = list(combined.columns)
+    array_cols = {}
+    for c in combined.select_dtypes(include="object").columns:
+        nonnull = combined[c].dropna()
+        if len(nonnull) and isinstance(nonnull.iloc[0], (list, np.ndarray)):
+            array_cols[c] = combined[c]
+    if array_cols:
+        combined = combined.drop(columns=list(array_cols))
+
     combined = validate_dtypes(combined)
     for col in combined.select_dtypes(include="object").columns:
         converted = pd.to_numeric(combined[col], errors="coerce")
         if converted.notna().sum() >= combined[col].notna().sum() * 0.95:
             combined[col] = converted
+
+    if array_cols:
+        for c, series in array_cols.items():
+            combined[c] = series
+        combined = combined[orig_order]
 
     if os.environ.get("COMBINE_DFS_DEBUG"):
         import sys

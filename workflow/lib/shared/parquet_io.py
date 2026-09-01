@@ -22,6 +22,7 @@ Usage:
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -47,7 +48,7 @@ def read_parquet(
                 lf = lf.select(columns)
             return lf.collect().to_pandas()
         except (pl.exceptions.SchemaError, pl.exceptions.ComputeError):
-            # Mixed types in columns — fall back to pandas which is more lenient
+            # Mixed types in columns --- fall back to pandas which is more lenient
             return pd.read_parquet(path, columns=columns)
     else:
         return pd.read_parquet(path, columns=columns)
@@ -72,7 +73,7 @@ def read_parquets(
                 lf = lf.select(columns)
             return lf.collect().to_pandas()
         except (pl.exceptions.SchemaError, pl.exceptions.ComputeError):
-            # Schema/type mismatch across files — fall back to per-file reads
+            # Schema/type mismatch across files --- fall back to per-file reads
             dfs = [read_parquet(p, columns=columns) for p in paths]
             return pd.concat(dfs, ignore_index=True)
     else:
@@ -110,7 +111,7 @@ def read_table(path):
         )
     if fmt == "parquet":
         return read_parquet(resolved)
-    return pd.read_csv(resolved, sep="	")
+    return pd.read_csv(resolved, sep="\t")
 
 
 def write_parquet(
@@ -122,6 +123,20 @@ def write_parquet(
     Uses polars for faster writes when available, falls back to pandas.
     """
     if _HAS_POLARS:
+        # polars stringifies object columns whose cells are numpy arrays
+        # (e.g. sbs_info "bounds", a per-cell bbox that round-trips out of a
+        # parquet List column as an ndarray). Convert those to python lists so
+        # polars infers a proper List type instead of str(ndarray), keeping the
+        # combined table byte-consistent with the per-tile parquet files.
+        obj_cols = df.select_dtypes(include="object").columns
+        if len(obj_cols):
+            df = df.copy()
+            for c in obj_cols:
+                nonnull = df[c].dropna()
+                if len(nonnull) and isinstance(nonnull.iloc[0], np.ndarray):
+                    df[c] = df[c].map(
+                        lambda x: x.tolist() if isinstance(x, np.ndarray) else x
+                    )
         pl.from_pandas(df).write_parquet(str(path))
     else:
         df.to_parquet(path, index=False)
