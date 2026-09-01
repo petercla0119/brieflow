@@ -32,6 +32,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+def _thread_cap(workers: int) -> str:
+    # Fill idle cores instead of pinning BLAS/OMP at 2: size threads to this box.
+    # ponytail: ceiling 12 — BLAS/OMP gains flatten past ~8-16; raise if a run shows headroom.
+    # Override per-run with THREADS=N. Keep production Cheaha sbatch caps at 2 (admin-kill rule).
+    cores = os.cpu_count() or 4
+    return os.environ.get("THREADS") or str(max(2, min(12, cores // max(1, workers))))
+
+
 # --- fixed paths (override via env) ------------------------------------------
 WT = Path(os.environ.get("WT", str(Path(__file__).resolve().parents[3])))
 RUNNER = WT / "scripts" / "direct" / "run_phenotype_direct.py"
@@ -117,11 +125,13 @@ def postseg_run(tmp_path_factory):
     cfg_fp.write_text(yaml.safe_dump(cfg, sort_keys=False))
 
     env = dict(os.environ)
-    env.update(OMP_NUM_THREADS="2", MKL_NUM_THREADS="2",
-               OPENBLAS_NUM_THREADS="2", NUMEXPR_MAX_THREADS="2")
+    workers = 2  # 2 tiles -> 2 processes; each gets the rest of the box as threads
+    tcap = _thread_cap(workers)
+    env.update(OMP_NUM_THREADS=tcap, MKL_NUM_THREADS=tcap,
+               OPENBLAS_NUM_THREADS=tcap, NUMEXPR_MAX_THREADS=tcap)
     proc = subprocess.run(
         [sys.executable, str(RUNNER), "--config", str(cfg_fp),
-         "--step", "post-seg", "--plate-filter", str(PLATE), "--workers", "2"],
+         "--step", "post-seg", "--plate-filter", str(PLATE), "--workers", str(workers)],
         cwd=str(WT / "scripts" / "direct"),
         env=env, capture_output=True, text=True, timeout=1800,
     )
