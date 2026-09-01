@@ -41,6 +41,7 @@ def _simple_correct(nuclei, cells):
 
 # --- bit-identity: vectorized production fn == old loop, matched label sets ----
 
+
 def _assert_identical(nuclei, cells):
     got = identify_cytoplasm_cellpose(nuclei, cells)
     ref = _loop_reference(nuclei, cells)
@@ -181,3 +182,43 @@ def test_divergence_from_simple_correct_is_characterized():
     for r, c in diff:
         assert nuclei[r, c] > 0 and nuclei[r, c] < cells[r, c]
         assert shipped[r, c] == cells[r, c] and simple[r, c] == 0
+
+
+def test_gate_passes_but_label_sets_differ_documents_ceiling():
+    # The compatibility gate only compares unique-label COUNTS, not the label
+    # SETS (the 'weak proxy' called out in the ponytail comment). Here counts
+    # match (both have 3 uniques) but the sets differ: cells={0,1,2},
+    # nuclei={0,1,3}. A nucleus labelled 3 sits on a cell-2 pixel.
+    #
+    # Old loop: iterates CELL labels {1,2} only -> nucleus label 3 is never
+    # zeroed, so that pixel keeps the cell value 2.
+    # Vectorized: (nuclei>0)&(nuclei>=cells) -> 3>=2 is True -> the pixel is
+    # zeroed. This is the ONE documented divergence; both fns pass the gate.
+    #
+    # This test pins that divergence so it is a conscious, visible behavior
+    # change rather than a silent surprise. On real matched cellpose masks the
+    # label sets are equal and this case does not arise (guarded by the
+    # real-tile equivalence harness).
+    cells = np.zeros((4, 6), dtype=np.uint32)
+    cells[:, 0:3] = 1
+    cells[:, 3:5] = 2  # col 5 stays background 0
+    nuclei = np.zeros((4, 6), dtype=np.uint32)
+    nuclei[1:3, 1:2] = 1  # nucleus 1, interior to cell 1
+    nuclei[1:3, 3:4] = 3  # nucleus label 3, sitting on cell-2 pixels
+
+    assert len(np.unique(nuclei)) == len(np.unique(cells))  # gate passes
+    assert set(np.unique(nuclei).tolist()) != set(np.unique(cells).tolist())
+
+    vec = identify_cytoplasm_cellpose(nuclei, cells)
+    ref = _loop_reference(nuclei, cells)
+    assert vec is not None and ref is not None
+
+    diff = np.argwhere(vec != ref)
+    assert diff.size > 0, "expected the documented divergence to occur"
+    # every divergent pixel is a nucleus label absent from cells, with N >= C:
+    # loop keeps the cell value, vectorized zeros it.
+    cell_labels = set(np.unique(cells).tolist())
+    for r, c in diff:
+        assert nuclei[r, c] not in cell_labels
+        assert nuclei[r, c] >= cells[r, c]
+        assert ref[r, c] == cells[r, c] and vec[r, c] == 0
