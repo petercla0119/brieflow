@@ -13,9 +13,9 @@ def identify_cytoplasm_cellpose(nuclei, cells):
     Returns:
         ndarray: A 2D array representing the cytoplasm regions.
     """
-    # Check if the number of unique labels in nuclei and cells are the same
-    if len(np.unique(nuclei)) != len(np.unique(cells)):
-        return None  # Break out of the function if the masks are not compatible
+    # Incompatible masks: fail loud unless nuclei and cells share the same label set.
+    if set(np.unique(nuclei).tolist()) != set(np.unique(cells).tolist()):
+        return None
 
     # Vectorized replacement for the former per-label Python loop.
     #
@@ -34,10 +34,14 @@ def identify_cytoplasm_cellpose(nuclei, cells):
     # test_identify_cytoplasm_cellpose.py and verified on real plate-4 tiles in
     # equivalence_identify_cytoplasm.py.
     #
-    # ponytail: assumes nuclei/cells share the same label set (true for matched
-    # cellpose masks; the unique-count gate above is a weak proxy). If a nucleus
-    # label ever exists that is absent from `cells`, the old loop never zeroed it
-    # while this expression may — the real-tile equivalence check guards that.
+    # ponytail: relies on nuclei/cells sharing the same label set (true for
+    # matched cellpose masks, which reconcile_nuclei_cells relabels to a common
+    # label set). This precondition is now ENFORCED by the set-equality gate
+    # above — no longer a weak proxy: if a nucleus label ever existed that is
+    # absent from `cells`, the old loop never zeroed it while this expression
+    # would, so the gate returns None first and this line never runs on such
+    # input. The ascending-label semantics (keep C unless a nucleus N >= C
+    # covers the pixel) hold only under that shared-label-set precondition.
     cytoplasms = np.where((nuclei > 0) & (nuclei >= cells), 0, cells)
 
     # Calculate the number of identified cytoplasms (excluding background label)
