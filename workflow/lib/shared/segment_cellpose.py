@@ -400,16 +400,21 @@ def estimate_diameters(
     diam_nuclear = float(diam_nuclear)
     print(f"Estimated nuclear diameter: {diam_nuclear:.1f} pixels")
 
-    # Find optimal cell diameter using explicit SizeModel
+    # Find optimal cell diameter.
     print("Estimating cell diameters...")
-    model_cyto = CellposeModel(model_type=cellpose_model, gpu=gpu)
-    size_model_cyto = SizeModel(
-        cp_model=model_cyto,
-        pretrained_size=cellpose_models.size_model_path(cellpose_model),
-    )
-    diam_cell, _ = size_model_cyto.eval(rgb, channels=channels)
-    diam_cell = np.maximum(5.0, diam_cell)
-    diam_cell = float(diam_cell)
+    is_custom_model = "/" in cellpose_model or "\\" in cellpose_model
+    model_cyto = initialize_cellpose_model(cellpose_model, gpu=gpu)
+    if is_custom_model:
+        # Custom models have no companion SizeModel (_size.npy). Use the mean
+        # diameter of the model's training labels instead.
+        diam_cell = float(np.maximum(5.0, model_cyto.diam_labels))
+    else:
+        size_model_cyto = SizeModel(
+            cp_model=model_cyto,
+            pretrained_size=cellpose_models.size_model_path(cellpose_model),
+        )
+        diam_cell, _ = size_model_cyto.eval(rgb, channels=channels)
+        diam_cell = float(np.maximum(5.0, diam_cell))
     print(f"Estimated cell diameter: {diam_cell:.1f} pixels")
 
     return diam_nuclear, diam_cell
