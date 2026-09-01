@@ -370,7 +370,7 @@ def _extract_phenotype_one(task):
         else:
             raise ValueError(f"Unknown cp_method: {cp_method}")
 
-        phenotype_cp.to_csv(output_path, index=False, sep="\t")
+        atomic_write_parquet(phenotype_cp, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -403,7 +403,7 @@ def _merge_worker_cap(requested):
 
 
 def _merge_well_one(task):
-    """Per-well merge worker: concat per-tile phenotype_cp TSVs -> full + min parquet."""
+    """Per-well merge worker: concat per-tile phenotype_cp parquets -> full + min parquet."""
     plate, well, tiles, phen_fp, fmt, channel_names, prefix = task
     phen_fp = Path(phen_fp)
     tag = f"P{plate}/W{well}"
@@ -413,13 +413,13 @@ def _merge_well_one(task):
         return "skip", tag
     try:
         input_paths = [
-            phen_data_path(phen_fp, fmt, plate, well, str(t), "phenotype_cp", "tsv")
+            phen_data_path(phen_fp, fmt, plate, well, str(t), "phenotype_cp", "parquet")
             for t in tiles
         ]
         dfs = []
         for f in input_paths:
             try:
-                dfs.append(pd.read_csv(f, sep="\t"))
+                dfs.append(pd.read_parquet(f))
             except Exception:
                 pass
         if not dfs:
@@ -618,7 +618,7 @@ def process_phenotype(config, args):
         nuclei = phen_img_path(phen_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
         cells_p = phen_img_path(phen_fp, fmt, p, we, ti, "cells", subdirectory="labels")
         cyto = phen_img_path(phen_fp, fmt, p, we, ti, "identified_cytoplasms", subdirectory="labels")
-        out = phen_data_path(phen_fp, fmt, p, we, ti, "phenotype_cp", "tsv")
+        out = phen_data_path(phen_fp, fmt, p, we, ti, "phenotype_cp", "parquet")
         params = {
             "cp_method": cp_method,
             "channel_names": channel_names,
@@ -627,7 +627,8 @@ def process_phenotype(config, args):
             "wildcards": {"plate": p, "well": we, "tile": ti},
         }
         tasks.append((aligned, nuclei, cells_p, cyto, out, params))
-    errs += run_parallel(tasks, _extract_phenotype_one, min(w, 96), "Extract phenotype")
+    extract_workers = args.extract_workers if args.extract_workers else min(w, 96)
+    errs += run_parallel(tasks, _extract_phenotype_one, extract_workers, "Extract phenotype")
 
     # --- Step 7: Combine phenotype info (per well) ---
     # ponytail shim #3: gate combine/eval (steps 7-10) to post-seg so `--step segment` (GPU box)
@@ -785,6 +786,9 @@ def main():
                    help="Number of GPUs for segmentation (default: 1)")
     p.add_argument("--seg-workers", type=int, default=None,
                    help="Workers for segmentation step (default: seg-gpus if --gpu, else --workers)")
+    p.add_argument("--extract-workers", type=int, default=None,
+                   help="Cap on parallel workers for the post-seg extract_phenotype step "
+                        "(default: min(--workers, 96)). Lower to find the shared-disk I/O knee.")
     p.add_argument("--step", choices=["pre-seg", "segment", "post-seg", "all"], default="all",
                    help="pre-seg=IC+align (CPU), segment=cellpose (GPU), post-seg=extract+combine (CPU), all=everything")
     p.add_argument("--save-ic-intermediate", action="store_true",
@@ -804,6 +808,7 @@ def main():
     print(f"  Direct Phenotype Runner | format={fmt} gpu={args.gpu} step={args.step}")
     print(f"  config={args.config} workers={args.workers} max_tiles={args.max_tiles or 'all'}")
     print(f"  seg_gpus={args.seg_gpus} seg_workers={args.seg_workers or 'auto'}")
+    print(f"  extract_workers={args.extract_workers or 'auto (min(w,96))'}")
     print(f"{'#' * 60}")
 
     t0 = time.time()
