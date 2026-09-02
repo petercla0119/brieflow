@@ -168,6 +168,108 @@ def run_parallel(tasks, fn, workers, label, max_tasks_per_child=None):
 
 
 # ---------------------------------------------------------------------------
+# IC field step (well-group parallelism)
+# ---------------------------------------------------------------------------
+
+def _ic_per_group_threads(total_workers, concurrency):
+    """Threads per IC group when running `concurrency` groups concurrently.
+
+    concurrency<=0 is treated as 1 (per_group == total_workers).
+    """
+    return max(1, total_workers // max(1, concurrency))
+
+
+def _calculate_ic_one(task):
+    """Compute one well-group IC field. Module-level so the spawn pool can pickle it.
+
+    Returns (status, msg) with status in {"ok", "skip", "err"} — run_parallel's contract.
+    """
+    ic_out, tag, inputs = task["ic_out"], task["tag"], task["inputs"]
+    if out_exists(ic_out):
+        return "skip", tag
+    missing = [f for f in inputs if not out_exists(f)]
+    if missing:
+        return "err", f"IC {tag}: {len(missing)}/{len(inputs)} inputs missing"
+    try:
+        Path(ic_out).parent.mkdir(parents=True, exist_ok=True)
+        field = calculate_ic_field(
+            inputs, threading=True, n_jobs=task["n_jobs"],
+            sample_fraction=task["sample_fraction"], smooth=task["smooth"],
+            random_seed=task["random_seed"],
+        )
+        save_image(field, ic_out)
+        return "ok", tag
+    except Exception as e:
+        return "err", f"IC {tag}: {e}"
+
+
+def run_ic_step(image_type, combos, pp_fp, fmt, pp, total_workers, has_cycle):
+    """Calculate IC fields per well-group.
+
+    preprocess.ic_group_concurrency (default 1) runs N well-groups at once, each given
+    total_workers//N threads. A single well's IC caps at ~8 effective threads, so the
+    serial loop leaves most cores idle on high-vCPU boxes; running groups concurrently
+    reclaims them. concurrency<=1 is byte-identical to the prior serial loop.
+    """
+    # ponytail: ~4-10 GB/group; preprocess is disk-read-bound so real speedup is
+    # capped by storage bandwidth — largest on high-vCPU VMs / fast disks.
+    group_cols = ["plate", "well", "cycle"] if has_cycle else ["plate", "well"]
+    sample_frac = pp.get("sample_fraction", 1)
+    ic_smooth = pp.get("ic_smooth", None)
+    ic_seed = pp.get("ic_random_seed", None)
+    concurrency = int(pp.get("ic_group_concurrency", 1))
+
+    # Shared task build: output path + input gathering (identical in both branches)
+    tasks = []
+    for gk, gdf in combos.groupby(group_cols):
+        plate, well = str(gk[0]), str(gk[1])
+        cycle = str(gk[2]) if has_cycle else None
+        tag = f"P{plate}/W{well}" + (f"/C{cycle}" if cycle else "")
+
+        ic_loc = make_loc(fmt, plate, well, cycle=cycle)
+        ic_out = str(
+            pp_fp / "ic_fields" / image_type / get_data_output_path(ic_loc, "ic_field", fmt, fmt)
+        )
+        inputs = []
+        for _, tr in gdf.iterrows():
+            tl = make_loc(fmt, plate, well, str(tr["tile"]), cycle)
+            inputs.append(
+                str(pp_fp / get_image_output_path(tl, "image", fmt, image_subdir=image_type))
+            )
+        tasks.append({
+            "tag": tag, "ic_out": ic_out, "inputs": inputs,
+            "sample_fraction": sample_frac, "smooth": ic_smooth, "random_seed": ic_seed,
+        })
+
+    if concurrency <= 1:
+        # Serial in-process loop, each IC using all workers — the backward-compat path.
+        print(f"\n  IC fields ({image_type})...")
+        errs = 0
+        ic_mon = monitor_step(f"Calculate IC field ({image_type})").start()
+        for task in tasks:
+            task["n_jobs"] = total_workers
+            status, msg = _calculate_ic_one(task)
+            if status == "skip":
+                print(f"    SKIP IC {task['tag']}")
+            elif status == "ok":
+                print(f"    OK IC {task['tag']}")
+            else:
+                print(f"    ERR {msg}")
+                errs += 1
+        ic_mon.stop()
+        return errs
+
+    per_group = _ic_per_group_threads(total_workers, concurrency)
+    print(f"\n  IC fields ({image_type}): {concurrency} groups × {per_group} threads/group")
+    for task in tasks:
+        task["n_jobs"] = per_group
+    return run_parallel(
+        tasks, _calculate_ic_one, workers=concurrency,
+        label=f"Calculate IC field ({image_type})", max_tasks_per_child=1,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main processing per image type
 # ---------------------------------------------------------------------------
 
@@ -329,54 +431,9 @@ def process(image_type, config, args):
     errs += run_parallel(tasks, _convert_one, args.workers, f"Convert images ({image_type})")
 
     # ------------------------------------------------------------------
-    # Step 3: Calculate IC fields (sequential — each uses all cores via joblib)
+    # Step 3: Calculate IC fields (per well-group; see run_ic_step)
     # ------------------------------------------------------------------
-    print(f"\n  IC fields ({image_type})...")
-    group_cols = ["plate", "well", "cycle"] if has_cycle else ["plate", "well"]
-    sample_frac = pp.get("sample_fraction", 1)
-    ic_smooth = pp.get("ic_smooth", None)
-    ic_seed = pp.get("ic_random_seed", None)
-
-    ic_mon = monitor_step(f"Calculate IC field ({image_type})").start()
-    for gk, gdf in combos.groupby(group_cols):
-        plate, well = str(gk[0]), str(gk[1])
-        cycle = str(gk[2]) if has_cycle else None
-        tag = f"P{plate}/W{well}" + (f"/C{cycle}" if cycle else "")
-
-        ic_loc = make_loc(fmt, plate, well, cycle=cycle)
-        ic_out = str(
-            pp_fp / "ic_fields" / image_type / get_data_output_path(ic_loc, "ic_field", fmt, fmt)
-        )
-
-        if out_exists(ic_out):
-            print(f"    SKIP IC {tag}")
-            continue
-
-        # Gather converted images as IC inputs
-        inputs = []
-        for _, tr in gdf.iterrows():
-            tl = make_loc(fmt, plate, well, str(tr["tile"]), cycle)
-            inputs.append(str(pp_fp / get_image_output_path(tl, "image", fmt, image_subdir=image_type)))
-
-        missing = [f for f in inputs if not out_exists(f)]
-        if missing:
-            print(f"    WARN IC {tag}: {len(missing)}/{len(inputs)} inputs missing, skipping")
-            errs += 1
-            continue
-
-        Path(ic_out).parent.mkdir(parents=True, exist_ok=True)
-        try:
-            t0 = time.time()
-            field = calculate_ic_field(
-                inputs, threading=True, sample_fraction=sample_frac,
-                smooth=ic_smooth, random_seed=ic_seed, n_jobs=args.workers,
-            )
-            save_image(field, ic_out)
-            print(f"    OK IC {tag} ({time.time() - t0:.1f}s, {len(inputs)} tiles)")
-        except Exception as e:
-            print(f"    ERR IC {tag}: {e}")
-            errs += 1
-    ic_mon.stop()
+    errs += run_ic_step(image_type, combos, pp_fp, fmt, pp, args.workers, has_cycle)
 
     # ------------------------------------------------------------------
     # Step 4: Combine metadata (sequential)
