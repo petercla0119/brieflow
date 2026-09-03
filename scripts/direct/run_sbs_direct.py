@@ -32,7 +32,8 @@ sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 from lib.shared.file_utils import get_data_output_path, get_image_output_path, validate_dtypes
 from lib.shared.image_io import read_image, save_image
 from lib.shared.illumination_correction import apply_ic_field, combine_ic_images
-from lib.shared.parquet_io import write_parquet, read_parquets
+from lib.shared.parquet_io import write_parquet, read_parquets, read_table
+from lib.shared.combine_dfs import combine_tile_dfs
 from lib.shared.rule_utils import get_call_cells_params, get_segmentation_params, get_spot_detection_params
 from lib.shared.resource_monitor import monitor_step, set_benchmark_context
 
@@ -369,7 +370,7 @@ def _call_reads_one(task):
         bases = pd.read_csv(bases_path, sep="\t")
         peaks = read_image(peaks_path)
         reads = call_reads(bases_data=bases, peaks_data=peaks, method=method)
-        reads.to_csv(output_path, index=False, sep="\t")
+        write_parquet(reads, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -383,7 +384,7 @@ def _call_cells_one(task):
     try:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         from lib.sbs.call_cells import call_cells, load_barcode_library
-        reads = pd.read_csv(reads_path, sep="\t")
+        reads = read_table(reads_path)
         barcode_lib = load_barcode_library(cc_params["df_barcode_library_fp"])
         barcode_type = cc_params.get("barcode_type", "simple")
 
@@ -412,7 +413,7 @@ def _call_cells_one(task):
                 max_distance=cc_params["max_distance"],
                 n_barcodes=cc_params["n_barcodes"],
             )
-        cells.to_csv(output_path, index=False, sep="\t")
+        write_parquet(cells, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -428,7 +429,7 @@ def _extract_sbs_info_one(task):
         from lib.shared.extract_phenotype_minimal import extract_phenotype_minimal
         nuclei = read_image(nuclei_path)
         df = extract_phenotype_minimal(phenotype_data=nuclei, nuclei_data=nuclei, wildcards=wc)
-        df.to_csv(output_path, index=False, sep="\t")
+        write_parquet(df, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -618,7 +619,7 @@ def process_sbs(config, args):
         p, we, ti = r["plate"], r["well"], r["tile"]
         bases_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "bases", "tsv")
         peaks_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "peaks")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "tsv")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
         tasks.append((bases_p, peaks_p, out, cr_method))
     errs += run_parallel(tasks, _call_reads_one, w, "Call reads")
 
@@ -626,8 +627,8 @@ def process_sbs(config, args):
     tasks = []
     for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
-        reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "tsv")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "cells", "tsv")
+        reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "cells", "parquet")
         tasks.append((reads_p, out, cc_params))
     errs += run_parallel(tasks, _call_cells_one, w, "Call cells")
 
@@ -636,7 +637,7 @@ def process_sbs(config, args):
     for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         nuclei_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "sbs_info", "tsv")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "sbs_info", "parquet")
         wc = {"plate": p, "well": we, "tile": ti}
         tasks.append((nuclei_p, out, wc))
     errs += run_parallel(tasks, _extract_sbs_info_one, w, "Extract SBS info")
@@ -662,25 +663,16 @@ def process_sbs(config, args):
                     continue
 
                 input_paths = [
-                    sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "tsv")
+                    sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "parquet")
                     for _, tr in gdf.iterrows()
                 ]
-                dfs = []
-                for f in input_paths:
-                    try:
-                        dfs.append(pd.read_csv(f, sep="\t"))
-                    except Exception:
-                        pass
-                if not dfs:
+                # Read per-tile intermediates (parquet-or-tsv, prefer parquet),
+                # concat, and normalize dtypes (shared helper). Production TSV-only
+                # wells resolve to .tsv; fresh parquet wells resolve to .parquet.
+                combined = combine_tile_dfs(input_paths)
+                if combined is None:
                     print(f"    WARN combine {info_type} P{plate}/W{well}: no inputs")
                     continue
-
-                combined = pd.concat(dfs, ignore_index=True)
-                combined = validate_dtypes(combined)
-                for col in combined.select_dtypes(include="object").columns:
-                    converted = pd.to_numeric(combined[col], errors="coerce")
-                    if converted.notna().sum() >= combined[col].notna().sum() * 0.95:
-                        combined[col] = converted
 
                 Path(out).parent.mkdir(parents=True, exist_ok=True)
                 write_parquet(combined, out)
@@ -724,7 +716,7 @@ def process_sbs(config, args):
                                 md_paths.append(mp)
 
                         if cells_paths and md_paths:
-                            cells_df = read_parquets(cells_paths)
+                            cells_df = read_parquets(cells_paths, columns=["well", "tile"])
                             md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
                             md_df = md_df.drop_duplicates(subset=["well", "tile"])
                             summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
@@ -779,9 +771,9 @@ def process_sbs(config, args):
                     else:
                         barcodes = get_barcode_list(barcode_lib)
 
-                    reads = read_parquets(reads_paths)
+                    reads = read_parquets(reads_paths, columns=["cell", "well", "tile", "barcode", "Q_min", "peak"])
                     cells = read_parquets(cells_paths)
-                    sbs_info = read_parquets(info_paths)
+                    sbs_info = read_parquets(info_paths, columns=["well", "tile", "cell"])
                     metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
 
                     eval_dir = sbs_fp / "eval" / "mapping"
