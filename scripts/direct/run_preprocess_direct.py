@@ -386,10 +386,12 @@ def process(image_type, config, args):
             out,
         ))
 
-    # ponytail: phenotype extract_metadata loads a whole ND2 well (~197GB RSS/well, measured);
-    # >1 concurrent worker OOMs the 251GB box (24/8/4/3/2 all OOM'd or climbed to danger).
-    # SBS wells are small (~5.6GB) so they keep full parallelism.
-    extract_workers = 1 if image_type == "phenotype" else args.workers
+    # phenotype extract_metadata is now metadata-only (nd2.ND2File.text_info, no pixel
+    # decode -- commit e6c09f1); peak RSS dropped from ~90+GB/well to ~MB, so the old
+    # OOM serial cap (fc9a676) is obsolete. Parallelize like SBS; the well count
+    # self-limits worker use. A full-well imread regression is caught by
+    # tests/unit/test_parse_binning_nd2.py (imread raises).
+    extract_workers = args.workers
     errs += run_parallel(tasks, _extract_one, extract_workers, f"Extract metadata ({image_type})", max_tasks_per_child=1)
 
     # ------------------------------------------------------------------
