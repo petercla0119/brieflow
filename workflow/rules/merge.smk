@@ -72,6 +72,12 @@ if merge_approach == "fast":
             det_range=config.get("merge", {}).get("det_range"),
             score=config.get("merge", {}).get("score"),
             threshold=config.get("merge", {}).get("threshold"),
+        threads: 1
+        resources:
+            mem_mb=8000,  # tune: holds full well phenotype+sbs info
+            runtime=20,   # minutes
+        benchmark:
+            MERGE_FP / "benchmarks" / get_filename({"plate": "{plate}", "well": "{well}"}, "fast_merge", "tsv")
         script:
             "../scripts/merge/fast_merge.py"
 
@@ -338,6 +344,7 @@ rule final_merge:
         MERGE_OUTPUTS_MAPPED["final_merge"][0],
     params:
         approach=config.get("merge", {}).get("approach", "fast"),
+        exclude_markers=config.get("merge", {}).get("exclude_markers"),
     script:
         "../scripts/merge/final_merge.py"
 

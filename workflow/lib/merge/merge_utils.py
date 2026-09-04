@@ -241,15 +241,11 @@ def plot_merge_example(df_ph, df_sbs, alignment_vec, threshold=2):
     )
     ax1.legend()
 
-    # Plot 2: Scale PH values to SBS axis
-    X_norm = (X - X.min(axis=0)) / (X.max(axis=0) - X.min(axis=0))
-
-    # Get the range and minimum of aligned SBS points (Y_pred)
-    Y_pred_range = Y_pred.max(axis=0) - Y_pred.min(axis=0)
-    Y_pred_min = Y_pred.min(axis=0)
-
-    # Scale and translate phenotype points to align with SBS field
-    X_scaled = (X_norm * Y_pred_range) + Y_pred_min
+    # Plot 2: Map PH points into SBS space with the fitted affine transform
+    # Apply the full RANSAC affine model (rotation + translation), the same
+    # transform used for matching above. Naive per-axis min-max rescaling
+    # cannot represent rotation, so it distorts good alignments in the plot.
+    X_scaled = model.predict(X)
 
     ax2.scatter(
         Y[:, 0],
@@ -279,13 +275,8 @@ def plot_merge_example(df_ph, df_sbs, alignment_vec, threshold=2):
     ax2.set_title("Normalized Scale For PH Points Relative to SBS")
     ax2.legend()
 
-    # Plot 3: Scale PH values to SBS axis
-    X_norm = (X - X.min(axis=0)) / (X.max(axis=0) - X.min(axis=0))
-    # Get the range and minimum of aligned SBS points (Y_pred)
-    Y_pred_range = Y_pred.max(axis=0) - Y_pred.min(axis=0)
-    Y_pred_min = Y_pred.min(axis=0)
-    # Scale and translate phenotype points to align with SBS field
-    X_scaled = (X_norm * Y_pred_range) + Y_pred_min
+    # Plot 3: Map PH points into SBS space with the fitted affine transform
+    X_scaled = model.predict(X)
     # Find unmatched phenotype points
     matched_ph_ix = np.unique(ix[filt])
     unmatched_ph_mask = ~np.isin(np.arange(len(X)), matched_ph_ix)
@@ -733,3 +724,12 @@ def fast_merge_example(
     except Exception as e:
         print(f"  Error plotting: {str(e)}")
         return False
+
+
+def filter_low_score_seeds(df, min_keep=5):
+    if len(df) <= min_keep:
+        return df
+    q1, q3 = df["score"].quantile([0.25, 0.75])
+    cutoff = q1 - 1.5 * (q3 - q1)
+    filtered = df[df["score"] >= cutoff]
+    return filtered if len(filtered) >= min_keep else df.nlargest(min_keep, "score")

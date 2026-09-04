@@ -118,9 +118,14 @@ rule calculate_ic_sbs:
         ),
     output:
         PREPROCESS_OUTPUTS_MAPPED["calculate_ic_sbs"],
+    threads: config.get("preprocess", {}).get("ic_n_jobs", 8)
     params:
         threading=True,
         sample_fraction=config.get("preprocess", {}).get("sample_fraction", 1),
+        smooth=config.get("preprocess", {}).get("ic_smooth", None),
+        random_seed=config.get("preprocess", {}).get("ic_random_seed", None),
+    benchmark:
+        PREPROCESS_FP / "benchmarks" / get_data_output_path(_pp_sbs_ic, "calculate_ic_sbs", "tsv", IMG_FMT)
     script:
         "../scripts/preprocess/calculate_ic_field.py"
 
@@ -136,9 +141,14 @@ rule calculate_ic_phenotype:
         ),
     output:
         PREPROCESS_OUTPUTS_MAPPED["calculate_ic_phenotype"],
+    threads: config.get("preprocess", {}).get("ic_n_jobs", 8)
     params:
         threading=True,
         sample_fraction=config.get("preprocess", {}).get("sample_fraction", 1),
+        smooth=config.get("preprocess", {}).get("ic_smooth", None),
+        random_seed=config.get("preprocess", {}).get("ic_random_seed", None),
+    benchmark:
+        PREPROCESS_FP / "benchmarks" / get_data_output_path(_pp_phen_ic, "calculate_ic_phenotype", "tsv", IMG_FMT)
     script:
         "../scripts/preprocess/calculate_ic_field.py"
 

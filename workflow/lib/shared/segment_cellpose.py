@@ -54,7 +54,26 @@ except (AttributeError, ValueError):
 CELLPOSE_4X = CELLPOSE_VERSION >= (4, 0)
 
 
-def initialize_cellpose_model(model_type: str, gpu: bool = False) -> CellposeModel:
+def select_gpu_device():
+    """Return the CUDA device with the most free VRAM across all visible GPUs.
+
+    Called once per segment job at startup so concurrent jobs naturally
+    spread across physical GPUs rather than all piling onto cuda:0.
+    """
+    import torch
+    if not torch.cuda.is_available():
+        return None
+    n = torch.cuda.device_count()
+    if n == 0:
+        return None
+    if n == 1:
+        return torch.device('cuda:0')
+    free = [torch.cuda.mem_get_info(i)[0] for i in range(n)]
+    return torch.device(f'cuda:{free.index(max(free))}')
+
+
+
+def initialize_cellpose_model(model_type: str, gpu: bool = False, device=None) -> CellposeModel:
     """Initialize a CellposeModel with version-aware configuration.
 
     Handles differences between Cellpose 3.x and 4.x APIs and validates
@@ -74,6 +93,10 @@ def initialize_cellpose_model(model_type: str, gpu: bool = False) -> CellposeMod
     Raises:
         ValueError: If model_type is incompatible with installed Cellpose version.
     """
+    # Select best available GPU device when gpu=True and no explicit device given
+    if gpu and device is None:
+        device = select_gpu_device()
+
     # Check if model_type is a custom model path (contains path separators)
     is_custom_model = model_type is not None and (
         "/" in model_type or "\\" in model_type
@@ -98,12 +121,12 @@ def initialize_cellpose_model(model_type: str, gpu: bool = False) -> CellposeMod
     # Version-aware initialization
     # Custom model paths use pretrained_model parameter in both versions
     if CELLPOSE_4X:
-        return CellposeModel(pretrained_model=model_type, gpu=gpu)
+        return CellposeModel(pretrained_model=model_type, gpu=gpu, device=device)
     elif is_custom_model:
         # For Cellpose 3.x with custom models, use pretrained_model
-        return CellposeModel(pretrained_model=model_type, gpu=gpu)
+        return CellposeModel(pretrained_model=model_type, gpu=gpu, device=device)
     else:
-        return CellposeModel(model_type=model_type, gpu=gpu)
+        return CellposeModel(model_type=model_type, gpu=gpu, device=device)
 
 
 def segment_cellpose(
@@ -377,16 +400,21 @@ def estimate_diameters(
     diam_nuclear = float(diam_nuclear)
     print(f"Estimated nuclear diameter: {diam_nuclear:.1f} pixels")
 
-    # Find optimal cell diameter using explicit SizeModel
+    # Find optimal cell diameter.
     print("Estimating cell diameters...")
-    model_cyto = CellposeModel(model_type=cellpose_model, gpu=gpu)
-    size_model_cyto = SizeModel(
-        cp_model=model_cyto,
-        pretrained_size=cellpose_models.size_model_path(cellpose_model),
-    )
-    diam_cell, _ = size_model_cyto.eval(rgb, channels=channels)
-    diam_cell = np.maximum(5.0, diam_cell)
-    diam_cell = float(diam_cell)
+    is_custom_model = "/" in cellpose_model or "\\" in cellpose_model
+    model_cyto = initialize_cellpose_model(cellpose_model, gpu=gpu)
+    if is_custom_model:
+        # Custom models have no companion SizeModel (_size.npy). Use the mean
+        # diameter of the model's training labels instead.
+        diam_cell = float(np.maximum(5.0, model_cyto.diam_labels))
+    else:
+        size_model_cyto = SizeModel(
+            cp_model=model_cyto,
+            pretrained_size=cellpose_models.size_model_path(cellpose_model),
+        )
+        diam_cell, _ = size_model_cyto.eval(rgb, channels=channels)
+        diam_cell = float(np.maximum(5.0, diam_cell))
     print(f"Estimated cell diameter: {diam_cell:.1f} pixels")
 
     return diam_nuclear, diam_cell

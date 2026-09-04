@@ -20,9 +20,9 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-# brieflow library: ../../brieflow/workflow relative to this script's location
+# brieflow library: ../../workflow relative to this script's location
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "brieflow" / "workflow"))
+sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 
 from lib.preprocess.preprocess import convert_to_array, extract_metadata, get_data_config
 from lib.preprocess.file_utils import get_metadata_wildcard_combos, get_sample_fps
@@ -30,6 +30,7 @@ from lib.shared.file_utils import get_data_output_path, get_image_output_path, v
 from lib.shared.illumination_correction import calculate_ic_field
 from lib.shared.image_io import save_image
 from lib.shared.parquet_io import write_parquet
+from lib.shared.resource_monitor import monitor_step, set_benchmark_context
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +134,7 @@ def _convert_one(task):
         return "err", f"{tag}: {e}"
 
 
-def run_parallel(tasks, fn, workers, label):
+def run_parallel(tasks, fn, workers, label, max_tasks_per_child=None):
     """Execute tasks with a process pool, reporting progress."""
     n = len(tasks)
     if n == 0:
@@ -142,7 +143,12 @@ def run_parallel(tasks, fn, workers, label):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    pool_kwargs = {"max_workers": workers}
+    if max_tasks_per_child is not None:
+        import multiprocessing as _mp
+        pool_kwargs["mp_context"] = _mp.get_context("spawn")
+        pool_kwargs["max_tasks_per_child"] = max_tasks_per_child
+    with monitor_step(label, n_workers=workers), ProcessPoolExecutor(**pool_kwargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -159,6 +165,108 @@ def run_parallel(tasks, fn, workers, label):
                 print(f"    [{total}/{n}] {elapsed:.0f}s  new={ok} skip={skip} err={err}")
     print(f"  {label}: done in {time.time() - t0:.1f}s")
     return err
+
+
+# ---------------------------------------------------------------------------
+# IC field step (well-group parallelism)
+# ---------------------------------------------------------------------------
+
+def _ic_per_group_threads(total_workers, concurrency):
+    """Threads per IC group when running `concurrency` groups concurrently.
+
+    concurrency<=0 is treated as 1 (per_group == total_workers).
+    """
+    return max(1, total_workers // max(1, concurrency))
+
+
+def _calculate_ic_one(task):
+    """Compute one well-group IC field. Module-level so the spawn pool can pickle it.
+
+    Returns (status, msg) with status in {"ok", "skip", "err"} — run_parallel's contract.
+    """
+    ic_out, tag, inputs = task["ic_out"], task["tag"], task["inputs"]
+    if out_exists(ic_out):
+        return "skip", tag
+    missing = [f for f in inputs if not out_exists(f)]
+    if missing:
+        return "err", f"IC {tag}: {len(missing)}/{len(inputs)} inputs missing"
+    try:
+        Path(ic_out).parent.mkdir(parents=True, exist_ok=True)
+        field = calculate_ic_field(
+            inputs, threading=True, n_jobs=task["n_jobs"],
+            sample_fraction=task["sample_fraction"], smooth=task["smooth"],
+            random_seed=task["random_seed"],
+        )
+        save_image(field, ic_out)
+        return "ok", tag
+    except Exception as e:
+        return "err", f"IC {tag}: {e}"
+
+
+def run_ic_step(image_type, combos, pp_fp, fmt, pp, total_workers, has_cycle):
+    """Calculate IC fields per well-group.
+
+    preprocess.ic_group_concurrency (default 1) runs N well-groups at once, each given
+    total_workers//N threads. A single well's IC caps at ~8 effective threads, so the
+    serial loop leaves most cores idle on high-vCPU boxes; running groups concurrently
+    reclaims them. concurrency<=1 is byte-identical to the prior serial loop.
+    """
+    # ponytail: ~4-10 GB/group; preprocess is disk-read-bound so real speedup is
+    # capped by storage bandwidth — largest on high-vCPU VMs / fast disks.
+    group_cols = ["plate", "well", "cycle"] if has_cycle else ["plate", "well"]
+    sample_frac = pp.get("sample_fraction", 1)
+    ic_smooth = pp.get("ic_smooth", None)
+    ic_seed = pp.get("ic_random_seed", None)
+    concurrency = int(pp.get("ic_group_concurrency", 1))
+
+    # Shared task build: output path + input gathering (identical in both branches)
+    tasks = []
+    for gk, gdf in combos.groupby(group_cols):
+        plate, well = str(gk[0]), str(gk[1])
+        cycle = str(gk[2]) if has_cycle else None
+        tag = f"P{plate}/W{well}" + (f"/C{cycle}" if cycle else "")
+
+        ic_loc = make_loc(fmt, plate, well, cycle=cycle)
+        ic_out = str(
+            pp_fp / "ic_fields" / image_type / get_data_output_path(ic_loc, "ic_field", fmt, fmt)
+        )
+        inputs = []
+        for _, tr in gdf.iterrows():
+            tl = make_loc(fmt, plate, well, str(tr["tile"]), cycle)
+            inputs.append(
+                str(pp_fp / get_image_output_path(tl, "image", fmt, image_subdir=image_type))
+            )
+        tasks.append({
+            "tag": tag, "ic_out": ic_out, "inputs": inputs,
+            "sample_fraction": sample_frac, "smooth": ic_smooth, "random_seed": ic_seed,
+        })
+
+    if concurrency <= 1:
+        # Serial in-process loop, each IC using all workers — the backward-compat path.
+        print(f"\n  IC fields ({image_type})...")
+        errs = 0
+        ic_mon = monitor_step(f"Calculate IC field ({image_type})").start()
+        for task in tasks:
+            task["n_jobs"] = total_workers
+            status, msg = _calculate_ic_one(task)
+            if status == "skip":
+                print(f"    SKIP IC {task['tag']}")
+            elif status == "ok":
+                print(f"    OK IC {task['tag']}")
+            else:
+                print(f"    ERR {msg}")
+                errs += 1
+        ic_mon.stop()
+        return errs
+
+    per_group = _ic_per_group_threads(total_workers, concurrency)
+    print(f"\n  IC fields ({image_type}): {concurrency} groups × {per_group} threads/group")
+    for task in tasks:
+        task["n_jobs"] = per_group
+    return run_parallel(
+        tasks, _calculate_ic_one, workers=concurrency,
+        label=f"Calculate IC field ({image_type})", max_tasks_per_child=1,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +386,13 @@ def process(image_type, config, args):
             out,
         ))
 
-    errs += run_parallel(tasks, _extract_one, args.workers, f"Extract metadata ({image_type})")
+    # phenotype extract_metadata is now metadata-only (nd2.ND2File.text_info, no pixel
+    # decode -- commit e6c09f1); peak RSS dropped from ~90+GB/well to ~MB, so the old
+    # OOM serial cap (fc9a676) is obsolete. Parallelize like SBS; the well count
+    # self-limits worker use. A full-well imread regression is caught by
+    # tests/unit/test_parse_binning_nd2.py (imread raises).
+    extract_workers = args.workers
+    errs += run_parallel(tasks, _extract_one, extract_workers, f"Extract metadata ({image_type})", max_tasks_per_child=1)
 
     # ------------------------------------------------------------------
     # Step 2: Convert images
@@ -319,47 +433,9 @@ def process(image_type, config, args):
     errs += run_parallel(tasks, _convert_one, args.workers, f"Convert images ({image_type})")
 
     # ------------------------------------------------------------------
-    # Step 3: Calculate IC fields (sequential — each uses all cores via joblib)
+    # Step 3: Calculate IC fields (per well-group; see run_ic_step)
     # ------------------------------------------------------------------
-    print(f"\n  IC fields ({image_type})...")
-    group_cols = ["plate", "well", "cycle"] if has_cycle else ["plate", "well"]
-    sample_frac = pp.get("sample_fraction", 1)
-
-    for gk, gdf in combos.groupby(group_cols):
-        plate, well = str(gk[0]), str(gk[1])
-        cycle = str(gk[2]) if has_cycle else None
-        tag = f"P{plate}/W{well}" + (f"/C{cycle}" if cycle else "")
-
-        ic_loc = make_loc(fmt, plate, well, cycle=cycle)
-        ic_out = str(
-            pp_fp / "ic_fields" / image_type / get_data_output_path(ic_loc, "ic_field", fmt, fmt)
-        )
-
-        if out_exists(ic_out):
-            print(f"    SKIP IC {tag}")
-            continue
-
-        # Gather converted images as IC inputs
-        inputs = []
-        for _, tr in gdf.iterrows():
-            tl = make_loc(fmt, plate, well, str(tr["tile"]), cycle)
-            inputs.append(str(pp_fp / get_image_output_path(tl, "image", fmt, image_subdir=image_type)))
-
-        missing = [f for f in inputs if not out_exists(f)]
-        if missing:
-            print(f"    WARN IC {tag}: {len(missing)}/{len(inputs)} inputs missing, skipping")
-            errs += 1
-            continue
-
-        Path(ic_out).parent.mkdir(parents=True, exist_ok=True)
-        try:
-            t0 = time.time()
-            field = calculate_ic_field(inputs, threading=True, sample_fraction=sample_frac)
-            save_image(field, ic_out)
-            print(f"    OK IC {tag} ({time.time() - t0:.1f}s, {len(inputs)} tiles)")
-        except Exception as e:
-            print(f"    ERR IC {tag}: {e}")
-            errs += 1
+    errs += run_ic_step(image_type, combos, pp_fp, fmt, pp, args.workers, has_cycle)
 
     # ------------------------------------------------------------------
     # Step 4: Combine metadata (sequential)
@@ -442,6 +518,7 @@ def main():
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
+    set_benchmark_context("preprocess", config["all"]["root_fp"], plate=args.plate_filter)
     img_fmt = config.get("all", {}).get("image_format", "tiff")
 
     print(f"{'#' * 60}")

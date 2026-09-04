@@ -10,24 +10,32 @@ Usage:
 """
 
 import argparse
+import os
 import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+# Cap BLAS/OMP threads before numpy import (per-process). GPU seg workers re-raise
+# via _worker_init_gpu. See CLAUDE.md OpenBLAS/MKL rule; matches run_phenotype_direct.py.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import numpy as np
 import pandas as pd
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "brieflow" / "workflow"))
+sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 
 from lib.shared.file_utils import get_data_output_path, get_image_output_path, validate_dtypes
 from lib.shared.image_io import read_image, save_image
 from lib.shared.illumination_correction import apply_ic_field, combine_ic_images
-from lib.shared.parquet_io import write_parquet, read_parquets
+from lib.shared.parquet_io import write_parquet, read_parquets, read_table
+from lib.shared.combine_dfs import combine_tile_dfs
 from lib.shared.rule_utils import get_call_cells_params, get_segmentation_params, get_spot_detection_params
+from lib.shared.resource_monitor import monitor_step, set_benchmark_context
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +102,13 @@ def preprocess_ic_path(pp_fp, fmt, plate, well, cycle):
 # Parallel execution helper
 # ---------------------------------------------------------------------------
 
-def run_parallel(tasks, fn, workers, label):
+def _worker_init_gpu(num_gpus, omp_threads=4):
+    """Worker initializer for GPU steps. Pins worker to a GPU via pid hash."""
+    os.environ["OMP_NUM_THREADS"] = str(omp_threads)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(os.getpid() % num_gpus)
+
+
+def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -102,7 +116,7 @@ def run_parallel(tasks, fn, workers, label):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    with monitor_step(label, n_workers=workers), ProcessPoolExecutor(max_workers=workers, initializer=initializer, initargs=initargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -116,7 +130,9 @@ def run_parallel(tasks, fn, workers, label):
             total = ok + skip + err
             if total == n or total % max(1, n // 20) == 0:
                 print(f"    [{total}/{n}] {time.time() - t0:.0f}s  new={ok} skip={skip} err={err}")
-    print(f"  {label}: done in {time.time() - t0:.1f}s")
+    elapsed = time.time() - t0
+    print(f"  {label}: done in {elapsed:.1f}s")
+    print(f"  PERF: {label}: {n} tasks, {workers} workers, {elapsed:.1f}s")
     return err
 
 
@@ -354,7 +370,7 @@ def _call_reads_one(task):
         bases = pd.read_csv(bases_path, sep="\t")
         peaks = read_image(peaks_path)
         reads = call_reads(bases_data=bases, peaks_data=peaks, method=method)
-        reads.to_csv(output_path, index=False, sep="\t")
+        write_parquet(reads, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -367,9 +383,9 @@ def _call_cells_one(task):
         return "skip", tag
     try:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        from lib.sbs.call_cells import call_cells
-        reads = pd.read_csv(reads_path, sep="\t")
-        barcode_lib = pd.read_csv(cc_params["df_barcode_library_fp"], sep="\t")
+        from lib.sbs.call_cells import call_cells, load_barcode_library
+        reads = read_table(reads_path)
+        barcode_lib = load_barcode_library(cc_params["df_barcode_library_fp"])
         barcode_type = cc_params.get("barcode_type", "simple")
 
         if barcode_type == "multi":
@@ -397,7 +413,7 @@ def _call_cells_one(task):
                 max_distance=cc_params["max_distance"],
                 n_barcodes=cc_params["n_barcodes"],
             )
-        cells.to_csv(output_path, index=False, sep="\t")
+        write_parquet(cells, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -413,7 +429,7 @@ def _extract_sbs_info_one(task):
         from lib.shared.extract_phenotype_minimal import extract_phenotype_minimal
         nuclei = read_image(nuclei_path)
         df = extract_phenotype_minimal(phenotype_data=nuclei, nuclei_data=nuclei, wildcards=wc)
-        df.to_csv(output_path, index=False, sep="\t")
+        write_parquet(df, output_path)
         return "ok", tag
     except Exception as e:
         return "err", f"{tag}: {e}"
@@ -466,6 +482,7 @@ def process_sbs(config, args):
 
     errs = 0
     w = args.workers
+    align_w = args.align_workers or w
     extra_ch = sbs_cfg.get("extra_channel_indices", [])
     spot_params = get_spot_detection_params(config)
     seg_params = get_segmentation_params("sbs", config)
@@ -474,25 +491,33 @@ def process_sbs(config, args):
     segment_cells_flag = sbs_cfg.get("segment_cells", True)
 
     run_tiles = args.step in ("tiles", "all")
+    run_pre_seg = args.step in ("tiles", "pre-seg", "all")
+    run_segment = args.step in ("tiles", "segment", "all")
+    run_post_seg = args.step in ("tiles", "post-seg", "all")
     run_combine = args.step in ("combine", "all")
 
-    # ponytail: in combine-only mode, empty tile_combos so all run_parallel calls are no-ops
-    if not run_tiles:
+    # ponytail: gate tile_combos to empty for phases that don't run
+    if not (run_pre_seg or run_segment or run_post_seg):
         tile_combos = tile_combos.iloc[0:0]
+
+    # ponytail: per-phase tile views — out_exists() skips already-done; empty = no tasks
+    pre_seg_tc = tile_combos if run_pre_seg else tile_combos.iloc[0:0]
+    segment_tc = tile_combos if run_segment else tile_combos.iloc[0:0]
+    post_seg_tc = tile_combos if run_post_seg else tile_combos.iloc[0:0]
 
     # --- Step 1: Align ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "aligned")
         cycles = sorted(cycles_by_tile[(p, we, ti)], key=int)
         cycle_paths = [preprocess_img_path(pp_fp, fmt, p, we, ti, c) for c in cycles]
         tasks.append((cycle_paths, out, sbs_cfg))
-    errs += run_parallel(tasks, _align_one, w, "Align cycles")
+    errs += run_parallel(tasks, _align_one, align_w, "Align cycles")
 
     # --- Step 2: Log filter ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "aligned")
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "log_filtered")
@@ -501,7 +526,7 @@ def process_sbs(config, args):
 
     # --- Step 3: Std deviation ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "log_filtered")
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "standard_deviation")
@@ -510,7 +535,7 @@ def process_sbs(config, args):
 
     # --- Step 4: Find peaks ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         if use_std_dev:
             inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "standard_deviation")
@@ -522,7 +547,7 @@ def process_sbs(config, args):
 
     # --- Step 5: Max filter ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "log_filtered")
         out = sbs_img_path(sbs_fp, fmt, p, we, ti, "max_filtered")
@@ -534,7 +559,7 @@ def process_sbs(config, args):
     tasks = []
     dapi_cyc = str(sbs_cfg["dapi_cycle"])
     cyto_cyc = str(sbs_cfg["cyto_cycle"])
-    for _, r in tile_combos.iterrows():
+    for _, r in pre_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         aligned_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "aligned")
         ic_dapi = preprocess_ic_path(pp_fp, fmt, p, we, dapi_cyc)
@@ -544,20 +569,37 @@ def process_sbs(config, args):
     errs += run_parallel(tasks, _apply_ic_one, w, "Apply IC field")
 
     # --- Step 7: Segment ---
-    seg_workers = 1 if seg_params.get("gpu", False) else min(w, 16)
+    seg_gpus = args.seg_gpus
+    if args.gpu and seg_gpus > 1:
+        try:
+            import torch
+            actual = torch.cuda.device_count()
+            if actual < seg_gpus:
+                print(f"  WARN: --seg-gpus {seg_gpus} but only {actual} GPU(s) detected, clamping")
+                seg_gpus = max(1, actual)
+        except Exception:
+            pass
+    if args.seg_workers:
+        seg_workers = args.seg_workers
+    elif args.gpu:
+        seg_workers = seg_gpus
+    else:
+        seg_workers = min(w, 16)
+    seg_init = (_worker_init_gpu, (seg_gpus,)) if args.gpu and seg_gpus > 1 else (None, ())
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in segment_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         inp = sbs_img_path(sbs_fp, fmt, p, we, ti, "illumination_corrected")
         n_out = sbs_img_path(sbs_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
         c_out = sbs_img_path(sbs_fp, fmt, p, we, ti, "cells", subdirectory="labels")
         s_out = sbs_data_path(sbs_fp, fmt, p, we, ti, "segmentation_stats", "tsv")
         tasks.append((inp, n_out, c_out, s_out, seg_params))
-    errs += run_parallel(tasks, _segment_one, seg_workers, "Segment SBS")
+    errs += run_parallel(tasks, _segment_one, seg_workers, "Segment SBS",
+                         initializer=seg_init[0], initargs=seg_init[1])
 
     # --- Step 8: Extract bases ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         peaks_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "peaks")
         maxf_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "max_filtered")
@@ -573,29 +615,29 @@ def process_sbs(config, args):
     # --- Step 9: Call reads ---
     cr_method = sbs_cfg.get("call_reads_method", "median")
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         bases_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "bases", "tsv")
         peaks_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "peaks")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "tsv")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
         tasks.append((bases_p, peaks_p, out, cr_method))
     errs += run_parallel(tasks, _call_reads_one, w, "Call reads")
 
     # --- Step 10: Call cells ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
-        reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "tsv")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "cells", "tsv")
+        reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "cells", "parquet")
         tasks.append((reads_p, out, cc_params))
     errs += run_parallel(tasks, _call_cells_one, w, "Call cells")
 
     # --- Step 11: Extract SBS info ---
     tasks = []
-    for _, r in tile_combos.iterrows():
+    for _, r in post_seg_tc.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
         nuclei_p = sbs_img_path(sbs_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
-        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "sbs_info", "tsv")
+        out = sbs_data_path(sbs_fp, fmt, p, we, ti, "sbs_info", "parquet")
         wc = {"plate": p, "well": we, "tile": ti}
         tasks.append((nuclei_p, out, wc))
     errs += run_parallel(tasks, _extract_sbs_info_one, w, "Extract SBS info")
@@ -611,38 +653,30 @@ def process_sbs(config, args):
         tile_combos = _all[["plate", "well", "tile"]].drop_duplicates()
 
     # --- Steps 12-14: Combine per well ---
-    print(f"\n  Combine per well...")
-    for info_type in ["reads", "cells", "sbs_info"]:
-        for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
-            out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
-            if out_exists(out):
-                print(f"    SKIP combine {info_type} P{plate}/W{well}")
-                continue
+    with monitor_step("Combine SBS"):
+        print(f"\n  Combine per well...")
+        for info_type in ["reads", "cells", "sbs_info"]:
+            for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
+                out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
+                if out_exists(out):
+                    print(f"    SKIP combine {info_type} P{plate}/W{well}")
+                    continue
 
-            input_paths = [
-                sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "tsv")
-                for _, tr in gdf.iterrows()
-            ]
-            dfs = []
-            for f in input_paths:
-                try:
-                    dfs.append(pd.read_csv(f, sep="\t"))
-                except Exception:
-                    pass
-            if not dfs:
-                print(f"    WARN combine {info_type} P{plate}/W{well}: no inputs")
-                continue
+                input_paths = [
+                    sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "parquet")
+                    for _, tr in gdf.iterrows()
+                ]
+                # Read per-tile intermediates (parquet-or-tsv, prefer parquet),
+                # concat, and normalize dtypes (shared helper). Production TSV-only
+                # wells resolve to .tsv; fresh parquet wells resolve to .parquet.
+                combined = combine_tile_dfs(input_paths)
+                if combined is None:
+                    print(f"    WARN combine {info_type} P{plate}/W{well}: no inputs")
+                    continue
 
-            combined = pd.concat(dfs, ignore_index=True)
-            combined = validate_dtypes(combined)
-            for col in combined.select_dtypes(include="object").columns:
-                converted = pd.to_numeric(combined[col], errors="coerce")
-                if converted.notna().sum() >= combined[col].notna().sum() * 0.95:
-                    combined[col] = converted
-
-            Path(out).parent.mkdir(parents=True, exist_ok=True)
-            write_parquet(combined, out)
-            print(f"    OK combine {info_type} P{plate}/W{well} ({len(combined)} rows)")
+                Path(out).parent.mkdir(parents=True, exist_ok=True)
+                write_parquet(combined, out)
+                print(f"    OK combine {info_type} P{plate}/W{well} ({len(combined)} rows)")
 
     # --- Steps 15-16: Eval per plate ---
     print(f"\n  Eval per plate...")
@@ -651,28 +685,74 @@ def process_sbs(config, args):
         # Eval segmentation
         overview_out = sbs_plate_path(sbs_fp, fmt, plate, "segmentation_overview", "tsv", "segmentation")
         if not out_exists(overview_out):
-            try:
-                from lib.shared.eval_segmentation import segmentation_overview, plot_cell_density_heatmap
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
+            with monitor_step("Eval segmentation"):
+                try:
+                    from lib.shared.eval_segmentation import segmentation_overview, plot_cell_density_heatmap
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
 
-                stats_paths = [
-                    sbs_data_path(sbs_fp, fmt, plate, r["well"], r["tile"], "segmentation_stats", "tsv")
-                    for _, r in tile_combos[tile_combos["plate"] == plate].iterrows()
-                ]
-                stats_paths = [p for p in stats_paths if Path(p).exists()]
+                    stats_paths = [
+                        sbs_data_path(sbs_fp, fmt, plate, r["well"], r["tile"], "segmentation_stats", "tsv")
+                        for _, r in tile_combos[tile_combos["plate"] == plate].iterrows()
+                    ]
+                    stats_paths = [p for p in stats_paths if Path(p).exists()]
 
-                if stats_paths:
-                    overview_df = segmentation_overview(stats_paths)
-                    Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
-                    overview_df.to_csv(overview_out, sep="\t", index=False)
+                    if stats_paths:
+                        overview_df = segmentation_overview(stats_paths)
+                        Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
+                        overview_df.to_csv(overview_out, sep="\t", index=False)
+
+                        wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                        cells_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet") for w in wells]
+                        cells_paths = [p for p in cells_paths if Path(p).exists()]
+
+                        md_loc = make_loc(fmt, plate)
+                        md_paths = []
+                        for w in wells:
+                            mp = str(pp_meta_fp / "metadata" / "sbs" / get_data_output_path(
+                                make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
+                            if Path(mp).exists():
+                                md_paths.append(mp)
+
+                        if cells_paths and md_paths:
+                            cells_df = read_parquets(cells_paths, columns=["well", "tile"])
+                            md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
+                            md_df = md_df.drop_duplicates(subset=["well", "tile"])
+                            summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
+                            heatmap_tsv = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "tsv", "segmentation")
+                            heatmap_png = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "png", "segmentation")
+                            summary.to_csv(heatmap_tsv, index=False, sep="\t")
+                            fig.savefig(heatmap_png, dpi=300, bbox_inches="tight", transparent=True)
+                            plt.close(fig)
+                        print(f"    OK eval_seg P{plate}")
+                except Exception as e:
+                    print(f"    ERR eval_seg P{plate}: {e}")
+                    errs += 1
+
+        # Eval mapping
+        mapping_out = sbs_plate_path(sbs_fp, fmt, plate, "mapping_vs_threshold_peak", "png", "mapping")
+        if not out_exists(mapping_out):
+            with monitor_step("Eval mapping"):
+                try:
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
+                    from lib.sbs.standardize_barcode_design import get_barcode_list
+                    from lib.sbs.eval_mapping import (
+                        plot_mapping_vs_threshold, plot_read_mapping_heatmap,
+                        plot_cell_mapping_heatmap, plot_cell_metric_histogram,
+                        plot_gene_symbol_histogram, mapping_overview, plot_barcode_prefix_matching,
+                    )
 
                     wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                    reads_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "reads", "parquet") for w in wells]
                     cells_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet") for w in wells]
+                    info_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "sbs_info", "parquet") for w in wells]
+                    reads_paths = [p for p in reads_paths if Path(p).exists()]
                     cells_paths = [p for p in cells_paths if Path(p).exists()]
+                    info_paths = [p for p in info_paths if Path(p).exists()]
 
-                    md_loc = make_loc(fmt, plate)
                     md_paths = []
                     for w in wells:
                         mp = str(pp_meta_fp / "metadata" / "sbs" / get_data_output_path(
@@ -680,113 +760,70 @@ def process_sbs(config, args):
                         if Path(mp).exists():
                             md_paths.append(mp)
 
-                    if cells_paths and md_paths:
-                        cells_df = read_parquets(cells_paths)
-                        md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
-                        md_df = md_df.drop_duplicates(subset=["well", "tile"])
-                        summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
-                        heatmap_tsv = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "tsv", "segmentation")
-                        heatmap_png = sbs_plate_path(sbs_fp, fmt, plate, "cell_density_heatmap", "png", "segmentation")
-                        summary.to_csv(heatmap_tsv, index=False, sep="\t")
-                        fig.savefig(heatmap_png, dpi=300, bbox_inches="tight", transparent=True)
-                        plt.close(fig)
-                    print(f"    OK eval_seg P{plate}")
-            except Exception as e:
-                print(f"    ERR eval_seg P{plate}: {e}")
-                errs += 1
+                    if not (reads_paths and cells_paths and info_paths and md_paths):
+                        print(f"    SKIP eval_mapping P{plate}: missing inputs")
+                        continue
 
-        # Eval mapping
-        mapping_out = sbs_plate_path(sbs_fp, fmt, plate, "mapping_vs_threshold_peak", "png", "mapping")
-        if not out_exists(mapping_out):
-            try:
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
-                from lib.sbs.standardize_barcode_design import get_barcode_list
-                from lib.sbs.eval_mapping import (
-                    plot_mapping_vs_threshold, plot_read_mapping_heatmap,
-                    plot_cell_mapping_heatmap, plot_cell_metric_histogram,
-                    plot_gene_symbol_histogram, mapping_overview, plot_barcode_prefix_matching,
-                )
-
-                wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
-                reads_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "reads", "parquet") for w in wells]
-                cells_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet") for w in wells]
-                info_paths = [sbs_well_path(sbs_fp, fmt, plate, w, "sbs_info", "parquet") for w in wells]
-                reads_paths = [p for p in reads_paths if Path(p).exists()]
-                cells_paths = [p for p in cells_paths if Path(p).exists()]
-                info_paths = [p for p in info_paths if Path(p).exists()]
-
-                md_paths = []
-                for w in wells:
-                    mp = str(pp_meta_fp / "metadata" / "sbs" / get_data_output_path(
-                        make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
-                    if Path(mp).exists():
-                        md_paths.append(mp)
-
-                if not (reads_paths and cells_paths and info_paths and md_paths):
-                    print(f"    SKIP eval_mapping P{plate}: missing inputs")
-                    continue
-
-                barcode_lib = pd.read_csv(sbs_cfg["df_barcode_library_fp"], sep="\t")
-                barcode_type = sbs_cfg.get("barcode_type", "simple")
-                if barcode_type == "multi":
-                    barcodes = get_barcode_list(barcode_lib, sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
-                else:
-                    barcodes = get_barcode_list(barcode_lib)
-
-                reads = read_parquets(reads_paths)
-                cells = read_parquets(cells_paths)
-                sbs_info = read_parquets(info_paths)
-                metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
-
-                eval_dir = sbs_fp / "eval" / "mapping"
-                Path(eval_dir).mkdir(parents=True, exist_ok=True)
-
-                def _save(info, ext, fig_or_df):
-                    path = sbs_plate_path(sbs_fp, fmt, plate, info, ext, "mapping")
-                    if isinstance(fig_or_df, pd.DataFrame):
-                        fig_or_df.to_csv(path, index=False, sep="\t")
+                    barcode_lib = pd.read_csv(sbs_cfg["df_barcode_library_fp"], sep="\t")
+                    barcode_type = sbs_cfg.get("barcode_type", "simple")
+                    if barcode_type == "multi":
+                        barcodes = get_barcode_list(barcode_lib, sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
                     else:
-                        fig_or_df.savefig(path, dpi=300, bbox_inches="tight", transparent=True)
-                        plt.close(fig_or_df)
+                        barcodes = get_barcode_list(barcode_lib)
 
-                _, fig = plot_mapping_vs_threshold(reads, barcodes, "peak", num_thresholds=10)
-                _save("mapping_vs_threshold_peak", "png", fig)
-                _, fig = plot_mapping_vs_threshold(reads, barcodes, "Q_min", num_thresholds=10)
-                _save("mapping_vs_threshold_qmin", "png", fig)
-                fig = plot_read_mapping_heatmap(reads, barcodes, metadata=metadata)
-                _save("read_mapping_heatmap", "png", fig)
+                    reads = read_parquets(reads_paths, columns=["cell", "well", "tile", "barcode", "Q_min", "peak"])
+                    cells = read_parquets(cells_paths)
+                    sbs_info = read_parquets(info_paths, columns=["well", "tile", "cell"])
+                    metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
 
-                sort_by = sbs_cfg.get("sort_calls", "count")
-                df1, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="one", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
-                _save("cell_mapping_heatmap_one", "tsv", df1)
-                _save("cell_mapping_heatmap_one", "png", fig)
-                df2, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="any", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
-                _save("cell_mapping_heatmap_any", "tsv", df2)
-                _save("cell_mapping_heatmap_any", "png", fig)
+                    eval_dir = sbs_fp / "eval" / "mapping"
+                    Path(eval_dir).mkdir(parents=True, exist_ok=True)
 
-                _, fig = plot_cell_metric_histogram(cells, sort_by=sort_by)
-                _save("cell_metric_histogram", "png", fig)
-                _, fig = plot_gene_symbol_histogram(cells)
-                _save("gene_symbol_histogram", "png", fig)
-                mo = mapping_overview(sbs_info, cells, sort_by=sort_by)
-                _save("mapping_overview", "tsv", mo)
+                    def _save(info, ext, fig_or_df):
+                        path = sbs_plate_path(sbs_fp, fmt, plate, info, ext, "mapping")
+                        Path(path).parent.mkdir(parents=True, exist_ok=True)
+                        if isinstance(fig_or_df, pd.DataFrame):
+                            fig_or_df.to_csv(path, index=False, sep="\t")
+                        else:
+                            fig_or_df.savefig(path, dpi=300, bbox_inches="tight", transparent=True)
+                            plt.close(fig_or_df)
 
-                lib_col = (sbs_cfg.get("prefix_map", "prefix_map") if barcode_type == "multi"
-                           else sbs_cfg.get("prefix_col", "prefix"))
-                if barcode_type == "multi":
-                    _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col,
-                                                          library_col_recomb=sbs_cfg.get("prefix_recomb", "prefix_recomb"),
-                                                          sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
-                else:
-                    _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col)
-                _save("barcode_prefix_matching", "png", fig)
+                    _, fig = plot_mapping_vs_threshold(reads, barcodes, "peak", num_thresholds=10)
+                    _save("mapping_vs_threshold_peak", "png", fig)
+                    _, fig = plot_mapping_vs_threshold(reads, barcodes, "Q_min", num_thresholds=10)
+                    _save("mapping_vs_threshold_qmin", "png", fig)
+                    fig = plot_read_mapping_heatmap(reads, barcodes, metadata=metadata)
+                    _save("read_mapping_heatmap", "png", fig)
 
-                print(f"    OK eval_mapping P{plate}")
-            except Exception as e:
-                print(f"    ERR eval_mapping P{plate}: {e}")
-                errs += 1
+                    sort_by = sbs_cfg.get("sort_calls", "count")
+                    df1, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="one", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
+                    _save("cell_mapping_heatmap_one", "tsv", df1)
+                    _save("cell_mapping_heatmap_one", "png", fig)
+                    df2, fig = plot_cell_mapping_heatmap(cells, sbs_info, barcodes, mapping_to="any", mapping_strategy="gene symbols", metadata=metadata, return_summary=True)
+                    _save("cell_mapping_heatmap_any", "tsv", df2)
+                    _save("cell_mapping_heatmap_any", "png", fig)
+
+                    _, fig = plot_cell_metric_histogram(cells, sort_by=sort_by)
+                    _save("cell_metric_histogram", "png", fig)
+                    _, fig = plot_gene_symbol_histogram(cells)
+                    _save("gene_symbol_histogram", "png", fig)
+                    mo = mapping_overview(sbs_info, cells, sort_by=sort_by)
+                    _save("mapping_overview", "tsv", mo)
+
+                    lib_col = (sbs_cfg.get("prefix_map", "prefix_map") if barcode_type == "multi"
+                               else sbs_cfg.get("prefix_col", "prefix"))
+                    if barcode_type == "multi":
+                        _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col,
+                                                              library_col_recomb=sbs_cfg.get("prefix_recomb", "prefix_recomb"),
+                                                              sequencing_order=sbs_cfg.get("sequencing_order", "map_recomb"))
+                    else:
+                        _, fig = plot_barcode_prefix_matching(reads, barcode_lib, library_col=lib_col)
+                    _save("barcode_prefix_matching", "png", fig)
+
+                    print(f"    OK eval_mapping P{plate}")
+                except Exception as e:
+                    print(f"    ERR eval_mapping P{plate}: {e}")
+                    errs += 1
 
     return errs
 
@@ -802,11 +839,18 @@ def main():
                    help="Start index into sorted tile list (for SLURM array partitioning)")
     p.add_argument("--tile-end", type=int, default=None,
                    help="End index into sorted tile list (exclusive)")
-    p.add_argument("--step", choices=["tiles", "combine", "all"], default="all",
-                   help="tiles=per-tile steps 1-11, combine=merge+eval 12-16, all=everything")
+    p.add_argument("--step", choices=["tiles", "pre-seg", "segment", "post-seg", "combine", "all"], default="all",
+                   help="tiles=per-tile steps 1-11, pre-seg=steps 1-6 (CPU), segment=step 7 (GPU), post-seg=steps 8-11 (CPU), combine=merge+eval 12-16, all=everything")
+    p.add_argument("--align-workers", type=int, default=None,
+                   help="Workers for alignment step (default: same as --workers)")
+    p.add_argument("--seg-workers", type=int, default=None,
+                   help="Workers for segmentation step (default: seg-gpus if --gpu, else --workers)")
+    p.add_argument("--seg-gpus", type=int, default=1,
+                   help="Number of GPUs for segmentation (default: 1)")
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
+    set_benchmark_context("sbs", config["all"]["root_fp"], plate=args.plate_filter)
     if args.gpu:
         config.setdefault("sbs", {})["gpu"] = True
     fmt = config.get("all", {}).get("image_format", "tiff")

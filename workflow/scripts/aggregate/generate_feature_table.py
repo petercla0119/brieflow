@@ -1,6 +1,7 @@
 import gc
 import math
 
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.dataset as ds
@@ -70,15 +71,6 @@ print(f"Processing data in {num_batches} batch(es), ~{chunk_size} rows per batch
 aligned_output = snakemake.output[0]
 writer = None
 
-# Accumulators for construct-level aggregation
-# We'll collect per-construct data across batches
-construct_cell_counts = {}  # {construct_id: count}
-construct_gene_map = {}  # {construct_id: gene_name}
-construct_feature_sums = {}  # {construct_id: [sum of features]}
-construct_feature_counts = {}  # {construct_id: count for averaging}
-# For median, we need all values - store them
-construct_feature_values = {}  # {construct_id: list of feature arrays}
-
 # Process each batch
 for batch_idx, indices in enumerate(subset_indices):
     print(
@@ -141,21 +133,6 @@ for batch_idx, indices in enumerate(subset_indices):
     del aligned_table, aligned_batch
     gc.collect()
 
-    # Accumulate construct-level data for median computation
-    print(f"Accumulating construct statistics for batch {batch_idx + 1}...")
-    for construct_id in metadata[pert_id_col].unique():
-        mask = metadata[pert_id_col].values == construct_id
-        construct_features = features[mask]
-        gene_name = metadata.loc[mask, pert_col].iloc[0]
-
-        if construct_id not in construct_cell_counts:
-            construct_cell_counts[construct_id] = 0
-            construct_gene_map[construct_id] = gene_name
-            construct_feature_values[construct_id] = []
-
-        construct_cell_counts[construct_id] += mask.sum()
-        construct_feature_values[construct_id].append(construct_features)
-
     # Clean up batch data
     del metadata, features
     gc.collect()
@@ -165,34 +142,25 @@ if writer is not None:
     writer.close()
 print(f"\nSaved aligned cell data to: {aligned_output}")
 
-# TABLE 1: Construct-level table (one row per sgRNA)
+# TABLE 1: Construct-level table (one row per sgRNA).
+# Computed lazily from the aligned parquet — avoids holding all cell feature
+# vectors in memory across batches.
 print("\n=== Creating construct-level table ===")
 
-construct_rows = []
-for construct_id in construct_cell_counts.keys():
-    # Concatenate all feature arrays for this construct
-    all_features = np.vstack(construct_feature_values[construct_id])
-    # Compute median across all cells
-    median_features = np.median(all_features, axis=0)
-
-    row = {
-        pert_id_col: construct_id,
-        pert_col: construct_gene_map[construct_id],
-        "cell_count": construct_cell_counts[construct_id],
-    }
-    for i, col in enumerate(feature_cols):
-        row[col] = median_features[i]
-    construct_rows.append(row)
-
-# Free memory from accumulated features
-del construct_feature_values
-gc.collect()
-
-construct_table = pd.DataFrame(construct_rows)
-
-# Reorder columns: sgRNA, gene, cell_count, features
-construct_columns = [pert_id_col, pert_col, "cell_count"] + feature_cols
-construct_table = construct_table[construct_columns]
+lf = pl.scan_parquet(aligned_output)
+construct_agg = (
+    lf.group_by(pert_id_col)
+    .agg(
+        [pl.first(pert_col).alias(pert_col), pl.len().alias("cell_count")]
+        + [pl.median(c).alias(c) for c in feature_cols]
+    )
+    .collect()
+    .to_pandas()
+)
+construct_table = construct_agg[
+    [pert_id_col, pert_col, "cell_count"] + feature_cols
+].copy()
+construct_table["cell_count"] = construct_table["cell_count"].astype(int)
 
 print(f"Construct table shape: {construct_table.shape}")
 
