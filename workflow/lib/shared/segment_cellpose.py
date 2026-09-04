@@ -29,6 +29,7 @@ for incompatible model/version combinations.
 """
 
 import sys
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -73,6 +74,12 @@ def select_gpu_device():
 
 
 
+# ponytail: batch_size only changes how many 224px patches share a forward pass, not the result;
+# 32 feeds the idle A100 VRAM. Override via cellpose_kwargs batch_size if needed.
+_SEG_BATCH_SIZE = 32
+
+
+@lru_cache(maxsize=8)  # per-worker process: build each Cellpose model once, reuse across tiles
 def initialize_cellpose_model(model_type: str, gpu: bool = False, device=None) -> CellposeModel:
     """Initialize a CellposeModel with version-aware configuration.
 
@@ -471,6 +478,9 @@ def segment_cellpose_rgb(
     if cell_kwargs is None:
         cell_kwargs = kwargs.copy()
 
+    nuclei_kwargs.setdefault("batch_size", _SEG_BATCH_SIZE)
+    cell_kwargs.setdefault("batch_size", _SEG_BATCH_SIZE)
+
     counts = {}
 
     # Segment nuclei using nuclei-specific parameters
@@ -565,6 +575,7 @@ def segment_cellpose_nuclei_rgb(
 
     # Segment nuclei using CellposeModel from the RGB image
     # Pass only blue channel (DAPI) for nuclei segmentation
+    kwargs.setdefault("batch_size", _SEG_BATCH_SIZE)
     nuclei, _, _ = model.eval(rgb[2], diameter=nuclei_diameter, **kwargs)
 
     # Print the number of nuclei found before and after removing edges
