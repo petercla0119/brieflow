@@ -398,12 +398,20 @@ def process(image_type, config, args):
     # Step 2: Convert images
     # ------------------------------------------------------------------
     tasks = []
+    seen_out = set()  # dedup convert tasks by output path -- phenotype 'round' rows
+    # collapse to one combined multi-channel image per (plate, well, tile), so
+    # duplicate rows would otherwise race on the same zarr create (issue #36).
+    # No-op for SBS: 'cycle' is in the output path, so its paths are already unique.
     for _, r in combos.iterrows():
         plate, well, tile = str(r["plate"]), str(r["well"]), str(r["tile"])
         cycle = str(r["cycle"]) if has_cycle else None
 
         loc = make_loc(fmt, plate, well, tile, cycle)
         out = str(pp_fp / get_image_output_path(loc, "image", fmt, image_subdir=image_type))
+
+        if out in seen_out:
+            continue
+        seen_out.add(out)
 
         filt = {"plate": plate, "well": well}
         if dc["image_data_organization"] == "tile":
