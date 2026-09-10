@@ -31,4 +31,12 @@ image_array = convert_to_array(
 channel_names = data_config.get("channel_order")
 
 # Save in the format determined by output path extension
-save_image(image_array, snakemake.output[0], channel_names=channel_names)
+# OME-Zarr pyramid depth + compression (issues #27/#28); ignored for TIFF output.
+all_config = snakemake.config.get("all", {})
+save_image(
+    image_array,
+    snakemake.output[0],
+    channel_names=channel_names,
+    max_levels=all_config.get("zarr_max_levels", 5),
+    compression=all_config.get("zarr_compression", "blosc-zstd-bitshuffle"),
+)
