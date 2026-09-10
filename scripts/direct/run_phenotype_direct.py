@@ -380,7 +380,7 @@ def _extract_phenotype_one(task):
 # Memory-aware merge concurrency
 # ---------------------------------------------------------------------------
 
-WELL_PEAK_GB = 70  # measured ~66 GB read+concat peak per well; round up for headroom
+WELL_PEAK_GB = 135  # OOM 2026-09-10 (plate 9): single well hit 133GB RSS; underestimate over-scheduled workers -> OOM
 
 
 def _available_gb():
