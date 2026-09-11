@@ -13,8 +13,7 @@ rule align_sbs:
             ancient_output=True,
         ),
     output:
-        SBS_OUTPUTS_MAPPED["align_sbs"][0],  # aligned image
-        SBS_OUTPUTS_MAPPED["align_sbs"][1],  # alignment metrics TSV
+        SBS_OUTPUTS_MAPPED["align_sbs"],
     params:
         method=config.get("sbs", {}).get("alignment_method"),
         channel_names=config.get("sbs", {}).get("channel_names"),
@@ -30,7 +29,7 @@ rule align_sbs:
 # Apply Laplacian-of-Gaussian filter to all channels
 rule log_filter:
     input:
-        SBS_OUTPUTS["align_sbs"][0],
+        SBS_OUTPUTS["align_sbs"],
     output:
         SBS_OUTPUTS_MAPPED["log_filter"],
     params:
@@ -54,7 +53,7 @@ rule compute_standard_deviation:
 # Find local maxima of SBS reads across cycles
 rule find_peaks:
     input:
-        SBS_OUTPUTS["compute_standard_deviation"] if config.get("sbs", {}).get("spot_detection_method", "standard") == "standard" else SBS_OUTPUTS["align_sbs"][0],
+        SBS_OUTPUTS["compute_standard_deviation"] if config.get("sbs", {}).get("spot_detection_method", "standard") == "standard" else SBS_OUTPUTS["align_sbs"],
     output:
         SBS_OUTPUTS_MAPPED["find_peaks"],
     params:
@@ -79,7 +78,7 @@ rule max_filter:
 # Apply illumination correction field from segmentation cycle
 rule apply_ic_field_sbs:
     input:
-        SBS_OUTPUTS["align_sbs"][0],
+        SBS_OUTPUTS["align_sbs"],
         # extra channel illumination correction field
         lambda wildcards: output_to_input(
             PREPROCESS_OUTPUTS["calculate_ic_sbs"],
@@ -118,6 +117,10 @@ rule segment_sbs:
         SBS_OUTPUTS_MAPPED["segment_sbs"],
     params:
         config=lambda wildcards: get_segmentation_params("sbs", config),
+    resources:
+        gpu=1,
+    benchmark:
+        SBS_FP / "benchmarks" / get_data_output_path(_tile, "segment_sbs", "tsv", SBS_IMG_FMT)
     script:
         "../scripts/shared/segment.py"
 
@@ -146,11 +149,7 @@ rule call_reads:
     output:
         SBS_OUTPUTS_MAPPED["call_reads"],
     params:
-        chemistry=config.get("sbs", {}).get("chemistry", "four_color"),
         call_reads_method=config.get("sbs", {}).get("call_reads_method", "median"),
-        combinatorial=config.get("sbs", {}).get("combinatorial", None),
-        codebook_fp=config.get("sbs", {}).get("df_barcode_library_fp", None),
-        error_correct=config.get("sbs", {}).get("error_correct", False),
     script:
         "../scripts/sbs/call_reads.py"
 
@@ -172,10 +171,6 @@ rule extract_sbs_info:
     input:
         # use nuclei segmentation map
         SBS_OUTPUTS["segment_sbs"][0],
-        # alignment metrics TSV
-        SBS_OUTPUTS["align_sbs"][1],
-        # per-cell nuclei counts TSV
-        SBS_OUTPUTS["segment_sbs"][3],
     output:
         SBS_OUTPUTS_MAPPED["extract_sbs_info"],
     script:
@@ -299,35 +294,7 @@ rule eval_mapping:
         "../scripts/sbs/eval_mapping.py"
 
 
-# Write HCS plate-level metadata for zarr stores (zarr mode only)
-if SBS_IMG_FMT == "zarr":
-    rule finalize_hcs_sbs:
-        input:
-            SBS_TARGETS_ALL,
-        output:
-            touch(str(SBS_FP / ".hcs_done")),
-        params:
-            plate_zarr_dirs=[
-                str(SBS_FP / f"{store}_{p}.zarr")
-                for p in sorted(sbs_wildcard_combos["plate"].unique())
-                for store in [
-                    "aligned",
-                    "illumination_corrected",
-                    "log_filtered",
-                    "standard_deviation",
-                    "peaks",
-                    "max_filtered",
-                ]
-            ],
-            channels_metadata=config["preprocess"].get("sbs_channels_metadata", None),
-            channel_names=config.get("sbs", {}).get("channel_names", None),
-            modality="sbs",
-        threads: 8
-        script:
-            "../scripts/shared/write_hcs_metadata.py"
-
-
 # rule for all sbs processing steps
 rule all_sbs:
     input:
-        SBS_TARGETS_ALL + ([str(SBS_FP / ".hcs_done")] if SBS_IMG_FMT == "zarr" else []),
+        SBS_TARGETS_ALL,
