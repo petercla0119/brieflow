@@ -123,7 +123,7 @@ def preprocess_phen_ic_path(pp_fp, fmt, plate, well):
 _MP = multiprocessing.get_context("spawn")
 
 
-def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
+def run_parallel(tasks, fn, workers, label, initializer=None, initargs=(), proc_gpu=False):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -131,7 +131,7 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with monitor_step(label, n_workers=workers), ProcessPoolExecutor(max_workers=workers, mp_context=_MP, initializer=initializer, initargs=initargs) as pool:
+    with monitor_step(label, n_workers=workers, proc_gpu=proc_gpu), ProcessPoolExecutor(max_workers=workers, mp_context=_MP, initializer=initializer, initargs=initargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -588,7 +588,7 @@ def process_phenotype(config, args):
         s_out = phen_data_path(phen_fp, fmt, p, we, ti, "segmentation_stats", "tsv")
         tasks.append((inp, n_out, c_out, s_out, seg_params))
     errs += run_parallel(tasks, _segment_one, seg_workers, "Segment phenotype",
-                         initializer=seg_init[0], initargs=seg_init[1])
+                         initializer=seg_init[0], initargs=seg_init[1], proc_gpu=True)
 
     # --- Step 4: Identify cytoplasm ---
     tasks = []
