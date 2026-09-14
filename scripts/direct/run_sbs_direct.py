@@ -59,13 +59,69 @@ def make_loc(img_fmt, plate, well=None, tile=None, cycle=None):
     return loc
 
 
+def _zarr_node_has_chunks(p):
+    """True if a zarr node dir holds >=1 chunk file (real data), not just metadata.
+    A hollow tile (OOM/interrupt mid-write) keeps a stub zarr.json + empty data dirs;
+    the old dir-non-empty / size>0 checks wrongly accepted it, so every downstream
+    stage skipped it and truncation propagated silently (457 hollow SBS aligned tiles,
+    diagnosed 2026-09-08). Returns on the first chunk found -> cheap on full tiles too."""
+    for child in Path(p).rglob("*"):
+        if child.is_file() and child.name not in ("zarr.json", ".zarray", ".zgroup", ".zattrs"):
+            return True
+    return False
+
+
+def _zarr_tile_ok(p):
+    """Validate a zarr node dir inside a .zarr store.
+    - A label mask (nuclei/cells) can be legitimately all-background: zarr writes NO chunk
+      files, only array metadata. Trust it once 0/zarr.json exists; reject a stub that never
+      got that far. (Requiring chunks here falsely re-ran valid empty masks -- 2026-09-08.)
+    - An image tile is never all-zero, so its resolution-0 array must hold real chunk data;
+      a hollow stub (OOM/interrupt) has none and must recompute."""
+    if "labels" in p.parts:
+        return (p / "0" / "zarr.json").exists()
+    zero = p / "0"
+    return _zarr_node_has_chunks(zero if zero.exists() else p)
+
+
 def out_exists(path):
     p = Path(path)
+    if p.is_dir() and ".zarr" in str(p) and p.suffix != ".zarr" and (p / "zarr.json").exists():
+        return _zarr_tile_ok(p)
     if p.name == "zarr.json":
+        parent = p.parent
+        if ".zarr" in str(parent) and parent.suffix != ".zarr":
+            return _zarr_tile_ok(parent)
         return p.exists()
     if p.suffix == ".zarr":
         return p.is_dir() and any(p.iterdir()) if p.exists() else False
     return p.exists() and p.stat().st_size > 0
+
+
+def _nonempty_tile_count(input_paths):
+    """Count per-tile inputs holding >=1 row (parquet-or-tsv, prefer parquet).
+    Used to validate a combined well parquet is complete before trusting it:
+    empty tiles legitimately produce no rows, so completeness is measured
+    against non-empty inputs, not the raw tile count."""
+    import pyarrow.parquet as pq
+    n = 0
+    for p in input_paths:
+        pp = Path(p)
+        cand = pp if pp.exists() else pp.with_suffix(".tsv")
+        if not cand.exists():
+            continue
+        try:
+            if cand.suffix == ".parquet":
+                if pq.ParquetFile(cand).metadata.num_rows > 0:
+                    n += 1
+            else:
+                with open(cand) as fh:
+                    next(fh, None)  # header
+                    if next(fh, None) is not None:
+                        n += 1
+        except Exception:
+            n += 1  # unreadable -> assume it contributes; rebuild is idempotent
+    return n
 
 
 def sbs_img_path(sbs_fp, fmt, plate, well, tile, info_type, subdirectory=None):
@@ -108,7 +164,7 @@ def _worker_init_gpu(num_gpus, omp_threads=4):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(os.getpid() % num_gpus)
 
 
-def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
+def run_parallel(tasks, fn, workers, label, initializer=None, initargs=(), proc_gpu=False):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -116,7 +172,7 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with monitor_step(label, n_workers=workers), ProcessPoolExecutor(max_workers=workers, initializer=initializer, initargs=initargs) as pool:
+    with monitor_step(label, n_workers=workers, proc_gpu=proc_gpu), ProcessPoolExecutor(max_workers=workers, initializer=initializer, initargs=initargs) as pool:
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -595,7 +651,7 @@ def process_sbs(config, args):
         s_out = sbs_data_path(sbs_fp, fmt, p, we, ti, "segmentation_stats", "tsv")
         tasks.append((inp, n_out, c_out, s_out, seg_params))
     errs += run_parallel(tasks, _segment_one, seg_workers, "Segment SBS",
-                         initializer=seg_init[0], initargs=seg_init[1])
+                         initializer=seg_init[0], initargs=seg_init[1], proc_gpu=True)
 
     # --- Step 8: Extract bases ---
     tasks = []
@@ -658,14 +714,28 @@ def process_sbs(config, args):
         for info_type in ["reads", "cells", "sbs_info"]:
             for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
                 out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
-                if out_exists(out):
-                    print(f"    SKIP combine {info_type} P{plate}/W{well}")
-                    continue
-
                 input_paths = [
                     sbs_data_path(sbs_fp, fmt, plate, well, str(tr["tile"]), info_type, "parquet")
                     for _, tr in gdf.iterrows()
                 ]
+                # Completeness-guarded skip. A well parquet combined while post-seg
+                # was still writing is truncated, and plain out_exists() would skip
+                # rebuilding it forever (silent 4A3/5A2 truncation, 2026-09-08).
+                # Trust an existing well parquet only if its tile count covers every
+                # non-empty per-tile input; otherwise rebuild.
+                if out_exists(out):
+                    try:
+                        actual = int(pd.read_parquet(out, columns=["tile"])["tile"].nunique())
+                    except Exception:
+                        actual = -1
+                    if actual >= len(gdf):
+                        print(f"    SKIP combine {info_type} P{plate}/W{well} ({actual} tiles, full)")
+                        continue
+                    expected = _nonempty_tile_count(input_paths)
+                    if actual >= expected:
+                        print(f"    SKIP combine {info_type} P{plate}/W{well} ({actual} tiles, {expected} non-empty)")
+                        continue
+                    print(f"    REBUILD combine {info_type} P{plate}/W{well}: {actual} tiles < {expected} non-empty per-tile inputs")
                 # Read per-tile intermediates (parquet-or-tsv, prefer parquet),
                 # concat, and normalize dtypes (shared helper). Production TSV-only
                 # wells resolve to .tsv; fresh parquet wells resolve to .parquet.
