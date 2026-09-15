@@ -62,6 +62,10 @@ dependencies = [
   "fsspec==2026.2.0",
   "iohub==0.3.0",
   "marimo==0.23.6",
+  # Imported directly by lib/shared/image_utils.py and lib/external/cp_emulator.py.
+  # It had only ever arrived transitively (via phate -> scprep), so a resolve that
+  # drops scprep leaves the SBS align step failing on ModuleNotFoundError.
+  "decorator==5.3.1",
 ]
 
 
