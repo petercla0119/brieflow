@@ -395,8 +395,10 @@ def _available_gb():
 
 
 def _merge_worker_cap(requested):
-    """merge holds a full well (~66 GB peak) in RAM; size concurrency by memory, not
-    cores. Running 6 wells in parallel OOM-killed a 173 GB box (2026-08-08)."""
+    """merge holds a full well in RAM (WELL_PEAK_GB); size concurrency by memory,
+    not cores. Two OOMs set this: 6 parallel wells killed a 173 GB box (2026-08-08),
+    and plate 9 hit 133 GB in a single well (2026-09-10), which raised the estimate
+    from 70 to 135 GB."""
     avail = _available_gb()
     mem_cap = max(1, int(avail // WELL_PEAK_GB)) if avail else 2
     return max(1, min(requested, mem_cap))
@@ -661,7 +663,7 @@ def process_phenotype(config, args):
             print(f"    OK combine phenotype_info P{plate}/W{well} ({len(combined)} rows)")
 
     # --- Step 8: Merge phenotype (per well) ---
-    # merge is memory-bound (~66 GB peak per well): parallelize across wells but cap
+    # merge is memory-bound (~WELL_PEAK_GB per well): parallelize across wells but cap
     # concurrency by available RAM, not cores (6 parallel wells OOM-killed a 173 GB box).
     prefix = "cell" if segment_cells else "nucleus"
     merge_tasks = [
