@@ -46,4 +46,4 @@ elif method == "spotiflow":
     )
 
 # Save peak data (same for both methods)
-save_image(peaks, snakemake.output[0])
+save_image(peaks, snakemake.output[0], channel_names=["peaks"])
