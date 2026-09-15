@@ -64,7 +64,8 @@ def _zarr_node_has_chunks(p):
     A hollow tile (OOM/interrupt mid-write) keeps a stub zarr.json + empty data dirs;
     the old dir-non-empty / size>0 checks wrongly accepted it, so every downstream
     stage skipped it and truncation propagated silently (457 hollow SBS aligned tiles,
-    diagnosed 2026-09-08). Returns on the first chunk found -> cheap on full tiles too."""
+    diagnosed 2026-09-08). Returns on the first chunk found -> cheap on full tiles too.
+    """
     for child in Path(p).rglob("*"):
         if child.is_file() and child.name not in ("zarr.json", ".zarray", ".zgroup", ".zattrs"):
             return True
@@ -77,7 +78,8 @@ def _zarr_tile_ok(p):
       files, only array metadata. Trust it once 0/zarr.json exists; reject a stub that never
       got that far. (Requiring chunks here falsely re-ran valid empty masks -- 2026-09-08.)
     - An image tile is never all-zero, so its resolution-0 array must hold real chunk data;
-      a hollow stub (OOM/interrupt) has none and must recompute."""
+      a hollow stub (OOM/interrupt) has none and must recompute.
+    """
     if "labels" in p.parts:
         return (p / "0" / "zarr.json").exists()
     zero = p / "0"
@@ -102,7 +104,8 @@ def _nonempty_tile_count(input_paths):
     """Count per-tile inputs holding >=1 row (parquet-or-tsv, prefer parquet).
     Used to validate a combined well parquet is complete before trusting it:
     empty tiles legitimately produce no rows, so completeness is measured
-    against non-empty inputs, not the raw tile count."""
+    against non-empty inputs, not the raw tile count.
+    """
     import pyarrow.parquet as pq
     n = 0
     for p in input_paths:

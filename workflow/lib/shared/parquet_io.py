@@ -103,7 +103,8 @@ def read_table(path):
     """Read a per-tile intermediate as a pandas DataFrame, preferring parquet
     over its tsv sibling (via resolve_table_path). Raises FileNotFoundError if
     neither sibling has content. parquet -> read_parquet(); tsv -> pd.read_csv
-    (sep tab)."""
+    (sep tab).
+    """
     resolved, fmt = resolve_table_path(path)
     if resolved is None:
         raise FileNotFoundError(
