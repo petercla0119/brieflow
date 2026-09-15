@@ -104,9 +104,7 @@ def _read_concat(paths):
             # compute union_missing from the non-empty (kept) tiles only, else a
             # header-only tile missing e.g. `plate` would wrongly upcast it.
             kept_cols = [set(_col_list(fp, fm)) for fp, fm in kept]
-            union_missing = {
-                c for s in kept_cols for c in df.columns if c not in s
-            }
+            union_missing = {c for s in kept_cols for c in df.columns if c not in s}
             casts = [
                 pl.col(c).cast(pl.Float64)
                 for c in union_missing

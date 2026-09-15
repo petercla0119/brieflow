@@ -107,9 +107,7 @@ def read_table(path):
     """
     resolved, fmt = resolve_table_path(path)
     if resolved is None:
-        raise FileNotFoundError(
-            f"No non-empty parquet or tsv sibling found for {path}"
-        )
+        raise FileNotFoundError(f"No non-empty parquet or tsv sibling found for {path}")
     if fmt == "parquet":
         return read_parquet(resolved)
     return pd.read_csv(resolved, sep="\t")

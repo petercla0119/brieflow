@@ -29,9 +29,7 @@ from lib.shared.file_utils import get_image_output_path  # noqa: E402
 from lib.shared.image_io import read_image  # noqa: E402
 from lib.phenotype.identify_cytoplasm_cellpose import identify_cytoplasm_cellpose  # noqa: E402
 
-ANALYSIS = os.environ.get(
-    "ANALYSIS", "/mnt/work/broad-analysis/broad-tdp-gws/analysis"
-)
+ANALYSIS = os.environ.get("ANALYSIS", "/mnt/work/broad-analysis/broad-tdp-gws/analysis")
 PHEN_FP = Path(ANALYSIS) / "brieflow_output" / "phenotype"
 PLATE = 4
 N_SAMPLE = int(os.environ.get("N_SAMPLE", "8"))
@@ -54,7 +52,9 @@ def make_loc(img_fmt, plate, well=None, tile=None):
 
 def img_path(well, tile, info_type):
     loc = make_loc("zarr", PLATE, well, tile)
-    return str(PHEN_FP / get_image_output_path(loc, info_type, "zarr", subdirectory="labels"))
+    return str(
+        PHEN_FP / get_image_output_path(loc, info_type, "zarr", subdirectory="labels")
+    )
 
 
 def _loop_reference(nuclei, cells):
@@ -84,14 +84,26 @@ def discover_tiles():
     """
     sample_path = Path(img_path("B1", 0, "nuclei"))
     zarr_root = sample_path.parents[4]  # .../<info>.zarr
-    print(f"[discover] sample nuclei path: {sample_path}  exists={sample_path.exists()}")
+    print(
+        f"[discover] sample nuclei path: {sample_path}  exists={sample_path.exists()}"
+    )
     print(f"[discover] zarr root: {zarr_root}  exists={zarr_root.exists()}")
     found = []
     if not zarr_root.exists():
         return found
-    for row_dir in sorted(p for p in zarr_root.iterdir() if p.is_dir() and re.fullmatch(r"[A-Za-z]+", p.name)):
-        for c_dir in sorted((p for p in row_dir.iterdir() if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name)):
-            for t_dir in sorted((p for p in c_dir.iterdir() if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name)):
+    for row_dir in sorted(
+        p
+        for p in zarr_root.iterdir()
+        if p.is_dir() and re.fullmatch(r"[A-Za-z]+", p.name)
+    ):
+        for c_dir in sorted(
+            (p for p in row_dir.iterdir() if p.is_dir() and p.name.isdigit()),
+            key=lambda p: int(p.name),
+        ):
+            for t_dir in sorted(
+                (p for p in c_dir.iterdir() if p.is_dir() and p.name.isdigit()),
+                key=lambda p: int(p.name),
+            ):
                 if (t_dir / "labels" / "nuclei").exists():
                     found.append((f"{row_dir.name}{c_dir.name}", t_dir.name))
     return found
@@ -136,7 +148,9 @@ def main():
         if ref is None or vec is None:
             none_count += 1
             ok = (ref is None) and (vec is None)
-            print(f"{well}/{str(tile):>6} {n_cells:>6} {'None-gate':>9} {'':>9} {'':>8} {('OK' if ok else 'MISMATCH'):>10}")
+            print(
+                f"{well}/{str(tile):>6} {n_cells:>6} {'None-gate':>9} {'':>9} {'':>8} {('OK' if ok else 'MISMATCH'):>10}"
+            )
             continue
 
         vec_diff = int(np.count_nonzero(vec != ref))
@@ -148,16 +162,28 @@ def main():
         max_vec_diff = max(max_vec_diff, vec_diff)
         tot_simple_diff += simple_diff
         speed = (t_loop / t_vec) if t_vec > 0 else float("inf")
-        print(f"{well}/{str(tile):>6} {n_cells:>6} {t_loop:>9.3f} {t_vec:>9.4f} {speed:>7.0f}x {vec_diff:>10} {simple_diff:>13}")
+        print(
+            f"{well}/{str(tile):>6} {n_cells:>6} {t_loop:>9.3f} {t_vec:>9.4f} {speed:>7.0f}x {vec_diff:>10} {simple_diff:>13}"
+        )
 
     print("-" * len(hdr))
-    print(f"\nTOTALS: loop={tot_loop:.1f}s  vec={tot_vec:.3f}s  "
-          f"overall_speedup={ (tot_loop/tot_vec) if tot_vec>0 else float('inf'):.0f}x")
-    print(f"max (vec != loop) pixels on any tile: {max_vec_diff}   <-- MUST be 0 for bit-identity")
-    print(f"total (simple != loop) pixels across sample: {tot_simple_diff}   "
-          f"(characterizes the N<C label-order quirk; informational)")
+    print(
+        f"\nTOTALS: loop={tot_loop:.1f}s  vec={tot_vec:.3f}s  "
+        f"overall_speedup={(tot_loop / tot_vec) if tot_vec > 0 else float('inf'):.0f}x"
+    )
+    print(
+        f"max (vec != loop) pixels on any tile: {max_vec_diff}   <-- MUST be 0 for bit-identity"
+    )
+    print(
+        f"total (simple != loop) pixels across sample: {tot_simple_diff}   "
+        f"(characterizes the N<C label-order quirk; informational)"
+    )
     print(f"None-gate tiles: {none_count}")
-    verdict = "BIT-IDENTICAL on real data" if max_vec_diff == 0 else "DIVERGENCE — investigate"
+    verdict = (
+        "BIT-IDENTICAL on real data"
+        if max_vec_diff == 0
+        else "DIVERGENCE — investigate"
+    )
     print(f"\nVERDICT: {verdict}")
     sys.exit(0 if max_vec_diff == 0 else 1)
 

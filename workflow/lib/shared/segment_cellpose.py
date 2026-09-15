@@ -62,16 +62,16 @@ def select_gpu_device():
     spread across physical GPUs rather than all piling onto cuda:0.
     """
     import torch
+
     if not torch.cuda.is_available():
         return None
     n = torch.cuda.device_count()
     if n == 0:
         return None
     if n == 1:
-        return torch.device('cuda:0')
+        return torch.device("cuda:0")
     free = [torch.cuda.mem_get_info(i)[0] for i in range(n)]
-    return torch.device(f'cuda:{free.index(max(free))}')
-
+    return torch.device(f"cuda:{free.index(max(free))}")
 
 
 # ponytail: batch_size only changes how many 224px patches share a forward pass, not the result;
@@ -79,8 +79,12 @@ def select_gpu_device():
 _SEG_BATCH_SIZE = 32
 
 
-@lru_cache(maxsize=8)  # per-worker process: build each Cellpose model once, reuse across tiles
-def initialize_cellpose_model(model_type: str, gpu: bool = False, device=None) -> CellposeModel:
+@lru_cache(
+    maxsize=8
+)  # per-worker process: build each Cellpose model once, reuse across tiles
+def initialize_cellpose_model(
+    model_type: str, gpu: bool = False, device=None
+) -> CellposeModel:
     """Initialize a CellposeModel with version-aware configuration.
 
     Handles differences between Cellpose 3.x and 4.x APIs and validates

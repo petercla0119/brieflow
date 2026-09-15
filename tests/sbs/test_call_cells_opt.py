@@ -22,11 +22,14 @@ from lib.sbs.call_cells import (
 )
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
-BARCODE_LIB_FP = "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+BARCODE_LIB_FP = (
+    "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+)
 
 _all_tiles = ["P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100"]
 INTEGRATION_TILES = [
-    t for t in _all_tiles
+    t
+    for t in _all_tiles
     if (GOLDEN_DIR / f"{t}__reads.tsv").exists()
     and (GOLDEN_DIR / f"{t}__cells.tsv").exists()
 ]
@@ -50,6 +53,7 @@ MULTI_CC_KWARGS = dict(
 
 
 # ─── Phase 1: barcode library cache ─────────────────────────────────────────
+
 
 def test_library_cache_hit_no_reread(tmp_path):
     """Cache should parse the file exactly once; second call hits lru_cache."""
@@ -85,12 +89,14 @@ def test_library_cache_returns_independent_copies(tmp_path):
     df1["prefix_map"] = "XXXXXXXXXXXX"  # mutate in-place
 
     df2 = load_barcode_library(str(tsv))
-    assert df2["prefix_map"].iloc[0] == "AAAAAAAAAAAA", \
+    assert df2["prefix_map"].iloc[0] == "AAAAAAAAAAAA", (
         "Cache was corrupted by mutation of returned copy"
+    )
     _read_barcode_library_cached.cache_clear()
 
 
 # ─── Phase 2: error correction dedup ────────────────────────────────────────
+
 
 def _make_ref(*barcodes):
     return pd.Series(list(barcodes))
@@ -112,7 +118,9 @@ def test_dedup_runs_levenshtein_once_per_unique():
         error_correct_reads(reads, ref, max_distance=2)
 
     assert len(matrix_shapes) == 1
-    assert matrix_shapes[0] == 1, f"Expected 1 unique unmapped row, got {matrix_shapes[0]}"
+    assert matrix_shapes[0] == 1, (
+        f"Expected 1 unique unmapped row, got {matrix_shapes[0]}"
+    )
 
 
 def test_exact_matches_bypass_matrix():
@@ -129,14 +137,16 @@ def test_exact_matches_bypass_matrix():
 
 def test_correction_within_and_beyond_max_distance():
     """Dist-1 read corrected; dist-3 read left unchanged (max_distance=1)."""
-    ref = _make_ref("AAAAAAAAAA")   # 10-char ref
-    close = "AAAAAAAAAC"            # hamming-1
-    far = "AAAAAACCCA"              # hamming-3
+    ref = _make_ref("AAAAAAAAAA")  # 10-char ref
+    close = "AAAAAAAAAC"  # hamming-1
+    far = "AAAAAACCCA"  # hamming-3
 
     reads = pd.Series([close, far])
     result = error_correct_reads(reads, ref, max_distance=1, distance_metric="hamming")
 
-    assert result.iloc[0] == "AAAAAAAAAA", f"dist-1 should be corrected, got {result.iloc[0]}"
+    assert result.iloc[0] == "AAAAAAAAAA", (
+        f"dist-1 should be corrected, got {result.iloc[0]}"
+    )
     assert result.iloc[1] == far, f"dist-3 should be unchanged, got {result.iloc[1]}"
 
 
@@ -147,8 +157,9 @@ def test_ambiguous_correction_left_unchanged():
     reads = pd.Series(["AAAC"])
     result = error_correct_reads(reads, ref, max_distance=1, distance_metric="hamming")
 
-    assert result.iloc[0] == "AAAC", \
+    assert result.iloc[0] == "AAAC", (
         f"Ambiguous read should be unchanged, got {result.iloc[0]}"
+    )
 
 
 def test_zero_reads_produces_empty_output():
@@ -161,6 +172,7 @@ def test_zero_reads_produces_empty_output():
 
 # ─── Integration: output matches golden ─────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def barcode_lib_df():
     return pd.read_csv(BARCODE_LIB_FP, sep="\t")
@@ -170,20 +182,24 @@ def _assert_series_match(r, g, col):
     """Compare two series, tolerating pd.NA vs np.nan as equivalent nulls."""
     r_null = r.isna()
     g_null = g.isna()
-    assert (r_null == g_null).all(), \
-        f"NA positions differ in column '{col}'"
+    assert (r_null == g_null).all(), f"NA positions differ in column '{col}'"
 
     if pd.api.types.is_float_dtype(g):
         pd.testing.assert_series_equal(
-            r.rename(col), g.rename(col),
-            check_exact=False, rtol=1e-6, check_names=False, check_dtype=False,
+            r.rename(col),
+            g.rename(col),
+            check_exact=False,
+            rtol=1e-6,
+            check_names=False,
+            check_dtype=False,
         )
     elif (~g_null).any():
         # For non-float columns: compare non-NA values with dtype coercion
         pd.testing.assert_series_equal(
             r[~r_null].reset_index(drop=True).astype(str).rename(col),
             g[~g_null].reset_index(drop=True).astype(str).rename(col),
-            check_exact=True, check_names=False,
+            check_exact=True,
+            check_names=False,
         )
 
 
@@ -212,17 +228,19 @@ def test_cells_output_matches_golden(tile, barcode_lib_df):
 
     assert set(result_s.columns) == set(golden_s.columns), (
         f"Column mismatch:\n"
-        f"  extra={set(result_s.columns)-set(golden_s.columns)}\n"
-        f"  missing={set(golden_s.columns)-set(result_s.columns)}"
+        f"  extra={set(result_s.columns) - set(golden_s.columns)}\n"
+        f"  missing={set(golden_s.columns) - set(result_s.columns)}"
     )
 
     for col in golden_s.columns:
         _assert_series_match(result_s[col], golden_s[col], col)
 
+
 def test_hamming1_index_used_for_production_config(monkeypatch):
     """Fast path (precomputed index) fires for max_distance=1, metric=hamming."""
     called = {"n": 0}
     import lib.sbs.call_cells as ccmod
+
     real_build = ccmod._build_hamming1_index
 
     def spy(*a, **k):
@@ -233,7 +251,9 @@ def test_hamming1_index_used_for_production_config(monkeypatch):
 
     reference = pd.Series(["AAAAAAAAAAAA", "CCCCCCCCCCCC"])
     reads = pd.Series(["AAAAAAAAAAAC", "AAAAAAAAAAAA"])
-    out = error_correct_reads(reads, reference, max_distance=1, distance_metric="hamming")
+    out = error_correct_reads(
+        reads, reference, max_distance=1, distance_metric="hamming"
+    )
     assert called["n"] >= 1, "index builder must be called"
     assert out.iloc[0] == "AAAAAAAAAAAA"  # corrected
     assert out.iloc[1] == "AAAAAAAAAAAA"  # exact match

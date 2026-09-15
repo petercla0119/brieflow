@@ -45,19 +45,34 @@ except ImportError:  # monitoring must never be a hard dependency of a step
 # shared-memory accounting is ever actually needed.
 
 COLUMNS = [
-    "iso_time", "stage", "step", "plate", "machine_type", "n_workers",
-    "wall_s", "max_rss_mb", "max_vms_mb",
-    "max_cpu_pct", "mean_cpu_pct", "cpu_time_s", "read_mb", "write_mb",
+    "iso_time",
+    "stage",
+    "step",
+    "plate",
+    "machine_type",
+    "n_workers",
+    "wall_s",
+    "max_rss_mb",
+    "max_vms_mb",
+    "max_cpu_pct",
+    "mean_cpu_pct",
+    "cpu_time_s",
+    "read_mb",
+    "write_mb",
     "peak_nproc",
     # GPU: nvidia-smi sampled on the same tick. gpu_count=0 (blank cols) off-GPU.
     # gpu_pct is fleet-mean util (mean across all GPUs) — peak fleet-mean near
     # 100/gpu_count means only ~1 GPU busy, i.e. paying for idle GPUs.
-    "gpu_count", "max_gpu_pct", "mean_gpu_pct", "max_gpu_mem_mb",
+    "gpu_count",
+    "max_gpu_pct",
+    "mean_gpu_pct",
+    "max_gpu_mem_mb",
     "n_samples",
 ]
 
 # nvidia-smi path resolved once; None => no GPU tooling, GPU sampling skipped.
 import shutil
+
 _NVIDIA_SMI = shutil.which("nvidia-smi")
 
 _DEFAULT_INTERVAL = float(os.environ.get("BRIEFLOW_MONITOR_INTERVAL", "2.0"))
@@ -74,11 +89,15 @@ def _detect_machine_type():
         return mt
     try:
         import urllib.request
+
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/machine-type",
-            headers={"Metadata-Flavor": "Google"})
+            headers={"Metadata-Flavor": "Google"},
+        )
         with urllib.request.urlopen(req, timeout=1.0) as r:
-            return r.read().decode().rsplit("/", 1)[-1]  # projects/.../machineTypes/X -> X
+            return (
+                r.read().decode().rsplit("/", 1)[-1]
+            )  # projects/.../machineTypes/X -> X
     except Exception:
         return ""  # not on GCP or metadata unreachable — leave blank
 
@@ -99,22 +118,38 @@ def _iso(t):
 class ResourceMonitor:
     """Sample a process tree's peak RSS/CPU until stopped, then append a row."""
 
-    def __init__(self, step, pid=None, out=None, interval=None, stage=None,
-                 n_workers=None, plate=None):
+    def __init__(
+        self,
+        step,
+        pid=None,
+        out=None,
+        interval=None,
+        stage=None,
+        n_workers=None,
+        plate=None,
+    ):
         self.step = step
         self.pid = pid or os.getpid()
         self.out = _resolve_out(out)
         self.interval = interval or _DEFAULT_INTERVAL
         self.stage = stage or os.environ.get("BRIEFLOW_STAGE", "")
-        self.n_workers = n_workers if n_workers is not None else os.environ.get("BRIEFLOW_N_WORKERS", "")
-        self.plate = plate if plate is not None else os.environ.get("BRIEFLOW_PLATE", "")
-        self.machine_type = os.environ.get("BRIEFLOW_MACHINE_TYPE") or _detect_machine_type()
+        self.n_workers = (
+            n_workers
+            if n_workers is not None
+            else os.environ.get("BRIEFLOW_N_WORKERS", "")
+        )
+        self.plate = (
+            plate if plate is not None else os.environ.get("BRIEFLOW_PLATE", "")
+        )
+        self.machine_type = (
+            os.environ.get("BRIEFLOW_MACHINE_TYPE") or _detect_machine_type()
+        )
         self._stop = threading.Event()
         self._thread = None
         self._pcache = {}  # pid -> psutil.Process, reused so cpu_percent() deltas work
         self._io_baseline = {}  # pid -> (read_bytes, write_bytes) at first sight
-        self._io_last = {}      # pid -> latest (read_bytes, write_bytes)
-        self._io_ok = True      # cleared if io_counters unsupported (e.g. macOS)
+        self._io_last = {}  # pid -> latest (read_bytes, write_bytes)
+        self._io_ok = True  # cleared if io_counters unsupported (e.g. macOS)
         self.read_bytes = 0
         self.write_bytes = 0
         self.max_rss = 0
@@ -127,10 +162,10 @@ class ResourceMonitor:
         self.t0 = None
         # GPU accumulators (populated only when nvidia-smi is present)
         self.gpu_count = 0
-        self.max_gpu = 0.0       # peak fleet-mean util %
+        self.max_gpu = 0.0  # peak fleet-mean util %
         self._gpu_sum = 0.0
         self._gpu_samples = 0
-        self.max_gpu_mem = 0.0   # peak total mem used across GPUs (MB)
+        self.max_gpu_mem = 0.0  # peak total mem used across GPUs (MB)
         self._gpu_ok = _NVIDIA_SMI is not None
 
     # -- context manager -----------------------------------------------------
@@ -145,8 +180,10 @@ class ResourceMonitor:
     # -- lifecycle -----------------------------------------------------------
     def start(self):
         if psutil is None:
-            print(f"  [monitor] psutil unavailable — '{self.step}' not measured",
-                  file=sys.stderr)
+            print(
+                f"  [monitor] psutil unavailable — '{self.step}' not measured",
+                file=sys.stderr,
+            )
             return self
         self.t0 = time.time()
         self._prime_root_io()
@@ -239,12 +276,18 @@ class ResourceMonitor:
         if not self._gpu_ok:
             return
         import subprocess
+
         try:
             out = subprocess.run(
-                [_NVIDIA_SMI,
-                 "--query-gpu=utilization.gpu,memory.used",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=5).stdout.strip()
+                [
+                    _NVIDIA_SMI,
+                    "--query-gpu=utilization.gpu,memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
         except Exception:
             self._gpu_ok = False  # smi vanished/hung — stop trying
             return
@@ -300,7 +343,7 @@ class ResourceMonitor:
         read = write = 0
         for pid, (r0, w0) in self._io_baseline.items():
             r1, w1 = self._io_last.get(pid, (r0, w0))
-            read += max(0, r1 - r0)   # max: guard counter reset on pid reuse
+            read += max(0, r1 - r0)  # max: guard counter reset on pid reuse
             write += max(0, w1 - w0)
         self.read_bytes = read
         self.write_bytes = write
@@ -335,7 +378,9 @@ class ResourceMonitor:
             "peak_nproc": self.peak_nproc,
             "gpu_count": self.gpu_count,
             "max_gpu_pct": round(self.max_gpu, 1),
-            "mean_gpu_pct": round(self._gpu_sum / self._gpu_samples, 1) if self._gpu_samples else 0.0,
+            "mean_gpu_pct": round(self._gpu_sum / self._gpu_samples, 1)
+            if self._gpu_samples
+            else 0.0,
             "max_gpu_mem_mb": round(self.max_gpu_mem, 1),
             "n_samples": self._samples,
         }
@@ -349,7 +394,9 @@ class ResourceMonitor:
                 with open(self.out) as f:
                     old_header = f.readline().rstrip("\n")
                 if old_header != header:
-                    self.out.rename(self.out.with_suffix(self.out.suffix + ".oldschema.bak"))
+                    self.out.rename(
+                        self.out.with_suffix(self.out.suffix + ".oldschema.bak")
+                    )
             new = not self.out.exists()
             with open(self.out, "a") as f:
                 if new:
@@ -357,12 +404,18 @@ class ResourceMonitor:
                 f.write("\t".join(str(row[c]) for c in COLUMNS) + "\n")
         except OSError as e:
             print(f"  [monitor] could not write benchmark row: {e}", file=sys.stderr)
-        gpu = (f"gpu={row['max_gpu_pct']}%x{row['gpu_count']} "
-               f"gpu_mem={row['max_gpu_mem_mb']}MB " if row["gpu_count"] else "")
-        print(f"  [monitor] {self.step}: peak_rss={row['max_rss_mb']}MB "
-              f"peak_cpu={row['max_cpu_pct']}% "
-              f"read={row['read_mb']}MB write={row['write_mb']}MB "
-              f"{gpu}wall={row['wall_s']}s")
+        gpu = (
+            f"gpu={row['max_gpu_pct']}%x{row['gpu_count']} "
+            f"gpu_mem={row['max_gpu_mem_mb']}MB "
+            if row["gpu_count"]
+            else ""
+        )
+        print(
+            f"  [monitor] {self.step}: peak_rss={row['max_rss_mb']}MB "
+            f"peak_cpu={row['max_cpu_pct']}% "
+            f"read={row['read_mb']}MB write={row['write_mb']}MB "
+            f"{gpu}wall={row['wall_s']}s"
+        )
 
 
 def monitor_step(step, **kw):
@@ -382,29 +435,37 @@ def set_benchmark_context(stage, root_fp, plate=None):
     os.environ["BRIEFLOW_PLATE"] = "" if plate is None else str(plate)
     os.environ.setdefault("BRIEFLOW_MACHINE_TYPE", _detect_machine_type())
     os.environ.setdefault(
-        "BRIEFLOW_BENCHMARK_DIR", str(Path(root_fp) / "benchmarks" / "direct"))
+        "BRIEFLOW_BENCHMARK_DIR", str(Path(root_fp) / "benchmarks" / "direct")
+    )
 
 
 # ---------------------------------------------------------------------------
 # Standalone CLI: wrap a command or attach to a PID
 # ---------------------------------------------------------------------------
 
+
 def _main(argv):
     import argparse
     import subprocess
 
     ap = argparse.ArgumentParser(
-        description="Monitor peak RSS/CPU of a process tree for one step.")
+        description="Monitor peak RSS/CPU of a process tree for one step."
+    )
     ap.add_argument("--label", required=True, help="Step name recorded in the TSV")
     ap.add_argument("--stage", default=None, help="Optional stage tag column")
     ap.add_argument("--plate", default=None, help="Plate tag column")
     ap.add_argument("--workers", type=int, default=None, help="n_workers tag column")
     ap.add_argument("--out", default=None, help="Output TSV (default: env/cwd)")
     ap.add_argument("--interval", type=float, default=None, help="Sample seconds")
-    ap.add_argument("--pid", type=int, default=None,
-                    help="Attach to an existing PID and exit when it exits")
-    ap.add_argument("cmd", nargs=argparse.REMAINDER,
-                    help="-- COMMAND ARGS to launch and monitor")
+    ap.add_argument(
+        "--pid",
+        type=int,
+        default=None,
+        help="Attach to an existing PID and exit when it exits",
+    )
+    ap.add_argument(
+        "cmd", nargs=argparse.REMAINDER, help="-- COMMAND ARGS to launch and monitor"
+    )
     args = ap.parse_args(argv)
 
     cmd = args.cmd[1:] if args.cmd and args.cmd[0] == "--" else args.cmd
@@ -414,9 +475,15 @@ def _main(argv):
 
     if cmd:
         proc = subprocess.Popen(cmd)
-        mon = ResourceMonitor(args.label, pid=proc.pid, out=args.out,
-                              interval=args.interval, stage=args.stage,
-                              n_workers=args.workers, plate=args.plate)
+        mon = ResourceMonitor(
+            args.label,
+            pid=proc.pid,
+            out=args.out,
+            interval=args.interval,
+            stage=args.stage,
+            n_workers=args.workers,
+            plate=args.plate,
+        )
         mon.start()
         rc = proc.wait()
         mon.stop()
@@ -426,9 +493,15 @@ def _main(argv):
         if psutil is None:
             print("psutil unavailable", file=sys.stderr)
             return 1
-        mon = ResourceMonitor(args.label, pid=args.pid, out=args.out,
-                              interval=args.interval, stage=args.stage,
-                              n_workers=args.workers, plate=args.plate)
+        mon = ResourceMonitor(
+            args.label,
+            pid=args.pid,
+            out=args.out,
+            interval=args.interval,
+            stage=args.stage,
+            n_workers=args.workers,
+            plate=args.plate,
+        )
         mon.start()
         try:
             while psutil.pid_exists(args.pid):

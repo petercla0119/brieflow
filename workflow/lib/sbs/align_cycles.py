@@ -317,7 +317,9 @@ def align_cycles(
 
     # Alignment QC — residual on aligned cycles and base channels
     if compute_qc:
-        if aligned.shape[1] > 0 and (channel_order is None or channel_order[0] == "DAPI"):
+        if aligned.shape[1] > 0 and (
+            channel_order is None or channel_order[0] == "DAPI"
+        ):
             dapi_residual = calculate_offsets(
                 aligned[:, 0], upsample_factor=upsample_factor
             )

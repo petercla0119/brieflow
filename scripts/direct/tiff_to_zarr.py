@@ -77,12 +77,12 @@ from tifffile import imread as tiff_imread  # noqa: E402
 class ImageSpec:
     """Describes one image type: output location and zarr write parameters."""
 
-    module_dir: str           # relative dir under output_root (e.g. "sbs")
-    zarr_info_type: str       # zarr-side name (e.g. "aligned", "nuclei")
-    is_label: bool            # True for segmentation label arrays
+    module_dir: str  # relative dir under output_root (e.g. "sbs")
+    zarr_info_type: str  # zarr-side name (e.g. "aligned", "nuclei")
+    is_label: bool  # True for segmentation label arrays
     label_parent: Optional[str]  # "aligned" for labels, None otherwise
     channel_names: Optional[list]  # set for preprocess images only
-    has_cycle: bool = False   # True for sbs preprocess images
+    has_cycle: bool = False  # True for sbs preprocess images
 
 
 @dataclass
@@ -92,10 +92,10 @@ class ConvertJob:
     tiff_path: Path
     out_path: Path
     spec: ImageSpec
-    module_key: str   # e.g. "sbs", "preprocess_sbs"
+    module_key: str  # e.g. "sbs", "preprocess_sbs"
     plate: str
     well: str
-    tile: Optional[int]   # None for IC fields (no tile)
+    tile: Optional[int]  # None for IC fields (no tile)
     cycle: Optional[int]  # None for non-cycle images
 
 
@@ -103,7 +103,7 @@ class ConvertJob:
 class Result:
     """Outcome of one convert_one() call."""
 
-    status: str   # "ok" | "skipped" | "empty" | "error"
+    status: str  # "ok" | "skipped" | "empty" | "error"
     job: ConvertJob
     msg: str
 
@@ -115,50 +115,83 @@ class Result:
 REGISTRY: dict[tuple[str, str], ImageSpec] = {
     # preprocess images
     ("preprocess_sbs", "image"): ImageSpec(
-        "preprocess/sbs", "image", False, None,
-        ["DAPI", "G", "T", "A", "C"], has_cycle=True,
+        "preprocess/sbs",
+        "image",
+        False,
+        None,
+        ["DAPI", "G", "T", "A", "C"],
+        has_cycle=True,
     ),
     ("preprocess_pheno", "image"): ImageSpec(
-        "preprocess/phenotype", "image", False, None,
-        ["MAP2", "STMN2_CE", "STMN2_FL", "TDP43", "DAPI", "TOMM20", "FUS", "DAPI_round2"],
+        "preprocess/phenotype",
+        "image",
+        False,
+        None,
+        [
+            "MAP2",
+            "STMN2_CE",
+            "STMN2_FL",
+            "TDP43",
+            "DAPI",
+            "TOMM20",
+            "FUS",
+            "DAPI_round2",
+        ],
     ),
     # sbs processing images
-    ("sbs", "aligned"):               ImageSpec("sbs", "aligned",               False, None, None),
-    ("sbs", "log_filtered"):          ImageSpec("sbs", "log_filtered",          False, None, None),
-    ("sbs", "max_filtered"):          ImageSpec("sbs", "max_filtered",          False, None, None),
-    ("sbs", "illumination_corrected"): ImageSpec("sbs", "illumination_corrected", False, None, None),
-    ("sbs", "standard_deviation"):    ImageSpec("sbs", "standard_deviation",   False, None, None),
-    ("sbs", "peaks"):                 ImageSpec("sbs", "peaks",                 False, None, None),
+    ("sbs", "aligned"): ImageSpec("sbs", "aligned", False, None, None),
+    ("sbs", "log_filtered"): ImageSpec("sbs", "log_filtered", False, None, None),
+    ("sbs", "max_filtered"): ImageSpec("sbs", "max_filtered", False, None, None),
+    ("sbs", "illumination_corrected"): ImageSpec(
+        "sbs", "illumination_corrected", False, None, None
+    ),
+    ("sbs", "standard_deviation"): ImageSpec(
+        "sbs", "standard_deviation", False, None, None
+    ),
+    ("sbs", "peaks"): ImageSpec("sbs", "peaks", False, None, None),
     # sbs labels (nested inside aligned plate zarr)
-    ("sbs", "nuclei"):                ImageSpec("sbs", "nuclei",  True, "aligned", None),
-    ("sbs", "cells"):                 ImageSpec("sbs", "cells",   True, "aligned", None),
+    ("sbs", "nuclei"): ImageSpec("sbs", "nuclei", True, "aligned", None),
+    ("sbs", "cells"): ImageSpec("sbs", "cells", True, "aligned", None),
     # phenotype images
-    ("phenotype", "aligned"):              ImageSpec("phenotype", "aligned",               False, None, None),
-    ("phenotype", "illumination_corrected"): ImageSpec("phenotype", "illumination_corrected", False, None, None),
+    ("phenotype", "aligned"): ImageSpec("phenotype", "aligned", False, None, None),
+    ("phenotype", "illumination_corrected"): ImageSpec(
+        "phenotype", "illumination_corrected", False, None, None
+    ),
     # phenotype labels
-    ("phenotype", "nuclei"):    ImageSpec("phenotype", "nuclei",               True, "aligned", None),
-    ("phenotype", "cells"):     ImageSpec("phenotype", "cells",                True, "aligned", None),
-    ("phenotype", "cytoplasm"): ImageSpec("phenotype", "identified_cytoplasms", True, "aligned", None),
+    ("phenotype", "nuclei"): ImageSpec("phenotype", "nuclei", True, "aligned", None),
+    ("phenotype", "cells"): ImageSpec("phenotype", "cells", True, "aligned", None),
+    ("phenotype", "cytoplasm"): ImageSpec(
+        "phenotype", "identified_cytoplasms", True, "aligned", None
+    ),
     # IC fields (flat nested path, no HCS plate zarr)
-    ("preprocess_ic_sbs",   "ic_field"): ImageSpec("preprocess/ic_fields/sbs",       "ic_field", False, None, None),
-    ("preprocess_ic_pheno", "ic_field"): ImageSpec("preprocess/ic_fields/phenotype", "ic_field", False, None, None),
+    ("preprocess_ic_sbs", "ic_field"): ImageSpec(
+        "preprocess/ic_fields/sbs", "ic_field", False, None, None
+    ),
+    ("preprocess_ic_pheno", "ic_field"): ImageSpec(
+        "preprocess/ic_fields/phenotype", "ic_field", False, None, None
+    ),
 }
 
 # Glob patterns relative to input_root, keyed by module_key
 GLOB_MAP: dict[str, str] = {
-    "preprocess_sbs":    "preprocess/images/sbs/*.tiff",
-    "preprocess_pheno":  "preprocess/images/phenotype/*.tiff",
-    "sbs":               "sbs/images/*.tiff",
-    "phenotype":         "phenotype/images/*.tiff",
+    "preprocess_sbs": "preprocess/images/sbs/*.tiff",
+    "preprocess_pheno": "preprocess/images/phenotype/*.tiff",
+    "sbs": "sbs/images/*.tiff",
+    "phenotype": "phenotype/images/*.tiff",
     "preprocess_ic_sbs": "preprocess/ic_fields/sbs/*.tiff",
     "preprocess_ic_pheno": "preprocess/ic_fields/phenotype/*.tiff",
 }
 
 # --modules argument → list of module_keys to activate
 MODULES_MAP: dict[str, list[str]] = {
-    "preprocess": ["preprocess_sbs", "preprocess_pheno", "preprocess_ic_sbs", "preprocess_ic_pheno"],
-    "sbs":        ["sbs"],
-    "phenotype":  ["phenotype"],
+    "preprocess": [
+        "preprocess_sbs",
+        "preprocess_pheno",
+        "preprocess_ic_sbs",
+        "preprocess_ic_pheno",
+    ],
+    "sbs": ["sbs"],
+    "phenotype": ["phenotype"],
 }
 
 
@@ -198,7 +231,9 @@ def _build_out_path(
         loc_ic: dict = {"plate": plate, "row": row, "col": col}
         if cycle is not None:
             loc_ic["cycle"] = str(cycle)
-        return output_root / spec.module_dir / get_nested_path(loc_ic, "ic_field", "zarr")
+        return (
+            output_root / spec.module_dir / get_nested_path(loc_ic, "ic_field", "zarr")
+        )
 
     loc: dict = {"plate": plate, "row": row, "col": col, "tile": str(tile)}
     if spec.has_cycle and cycle is not None:
@@ -239,7 +274,7 @@ def discover_jobs(
 
             plate = str(meta.get("plate", ""))
             well = str(meta.get("well", ""))
-            tile = meta.get("tile")    # int or None
+            tile = meta.get("tile")  # int or None
             cycle = meta.get("cycle")  # int or None
 
             if not plate or not well:
@@ -251,16 +286,18 @@ def discover_jobs(
                 print(f"  WARN: cannot build path for {tiff_path.name}: {e}")
                 continue
 
-            jobs.append(ConvertJob(
-                tiff_path=tiff_path,
-                out_path=out_path,
-                spec=spec,
-                module_key=mk,
-                plate=plate,
-                well=well,
-                tile=tile,
-                cycle=cycle,
-            ))
+            jobs.append(
+                ConvertJob(
+                    tiff_path=tiff_path,
+                    out_path=out_path,
+                    spec=spec,
+                    module_key=mk,
+                    plate=plate,
+                    well=well,
+                    tile=tile,
+                    cycle=cycle,
+                )
+            )
     return jobs
 
 
@@ -396,24 +433,47 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Convert brieflow TIFF pipeline output to OME-Zarr retroactively"
     )
-    p.add_argument("--input", required=True,
-                   help="brieflow_output root containing TIFF files")
-    p.add_argument("--output", required=True,
-                   help="Output zarr root (created if absent)")
-    p.add_argument("--brieflow-workflow", default=None,
-                   help="Path to brieflow/workflow (auto-detected if omitted)")
-    p.add_argument("--modules", default="preprocess,sbs,phenotype",
-                   help="Comma-separated modules to convert (default: all)")
-    p.add_argument("--tile-limit", type=int, default=None,
-                   help="Max tiles per (module, well) to convert")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Discover jobs and summarise; do not write files")
-    p.add_argument("--workers", type=int, default=4,
-                   help="ProcessPoolExecutor workers (default: 4)")
-    p.add_argument("--skip-finalize", action="store_true",
-                   help="Skip HCS metadata finalization pass")
-    p.add_argument("--overwrite", action="store_true",
-                   help="Overwrite existing zarr stores")
+    p.add_argument(
+        "--input", required=True, help="brieflow_output root containing TIFF files"
+    )
+    p.add_argument(
+        "--output", required=True, help="Output zarr root (created if absent)"
+    )
+    p.add_argument(
+        "--brieflow-workflow",
+        default=None,
+        help="Path to brieflow/workflow (auto-detected if omitted)",
+    )
+    p.add_argument(
+        "--modules",
+        default="preprocess,sbs,phenotype",
+        help="Comma-separated modules to convert (default: all)",
+    )
+    p.add_argument(
+        "--tile-limit",
+        type=int,
+        default=None,
+        help="Max tiles per (module, well) to convert",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Discover jobs and summarise; do not write files",
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="ProcessPoolExecutor workers (default: 4)",
+    )
+    p.add_argument(
+        "--skip-finalize",
+        action="store_true",
+        help="Skip HCS metadata finalization pass",
+    )
+    p.add_argument(
+        "--overwrite", action="store_true", help="Overwrite existing zarr stores"
+    )
     return p.parse_args()
 
 
@@ -475,6 +535,7 @@ def main() -> None:
 
     try:
         from tqdm import tqdm as _tqdm
+
         _has_tqdm = True
     except ImportError:
         _has_tqdm = False
@@ -514,13 +575,21 @@ def main() -> None:
     ok = skipped = empty = err = 0
 
     o, s, e, r = _run_batch(non_label_jobs, "Phase 1: images + IC fields")
-    ok += o; skipped += s; empty += e; err += r
+    ok += o
+    skipped += s
+    empty += e
+    err += r
 
     o, s, e, r = _run_batch(label_jobs, "Phase 2: labels")
-    ok += o; skipped += s; empty += e; err += r
+    ok += o
+    skipped += s
+    empty += e
+    err += r
 
     elapsed = time.time() - t0
-    print(f"\nConversion: ok={ok} skipped={skipped} empty={empty} err={err} [{elapsed:.1f}s]")
+    print(
+        f"\nConversion: ok={ok} skipped={skipped} empty={empty} err={err} [{elapsed:.1f}s]"
+    )
 
     # --- Finalize ---
     if not args.skip_finalize:

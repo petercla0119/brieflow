@@ -31,13 +31,15 @@ def test_qc_flag_does_not_change_output():
     )
     a_false = align_cycles([x.copy() for x in imgs], compute_qc=False, **kw)
     a_true = align_cycles([x.copy() for x in imgs], compute_qc=True, **kw)
-    assert np.array_equal(a_false, a_true), \
+    assert np.array_equal(a_false, a_true), (
         "compute_qc flag changed aligned array output"
+    )
 
 
 def test_qc_false_is_default():
     """compute_qc should default to False."""
     sig = inspect.signature(align_cycles)
     assert "compute_qc" in sig.parameters, "compute_qc not in align_cycles signature"
-    assert sig.parameters["compute_qc"].default is False, \
+    assert sig.parameters["compute_qc"].default is False, (
         f"compute_qc default should be False, got {sig.parameters['compute_qc'].default}"
+    )
