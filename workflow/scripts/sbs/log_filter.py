@@ -11,4 +11,4 @@ log_filtered = log_filter(
 )
 
 # Save the log filtered data
-save_image(log_filtered, snakemake.output[0])
+save_image(log_filtered, snakemake.output[0], channel_names=snakemake.params.channel_names)

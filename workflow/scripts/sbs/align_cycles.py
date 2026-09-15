@@ -21,4 +21,4 @@ aligned_data = align_cycles(
 )
 
 # Save the aligned data
-save_image(aligned_data, snakemake.output[0])
+save_image(aligned_data, snakemake.output[0], channel_names=snakemake.params.channel_names)
