@@ -9,6 +9,9 @@
 all:
   root_fp: brieflow_output/
   image_format: tiff
+  # OME-Zarr output knobs (only used when image_format: zarr); defaults ON.
+  zarr_max_levels: 5  # Pyramid resolution levels (#28); 1 disables downsampling
+  zarr_compression: blosc-zstd-bitshuffle  # (#27) lossless Blosc(zstd)+bitshuffle; "none" to disable
 preprocess:
   sbs_data_format: nd2
   sbs_data_organization: tile
