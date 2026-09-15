@@ -4,10 +4,11 @@ on:
   # Every PR, whatever its base -- fork work targets tdp-gws-integration, not main,
   # so a `branches: [main]` filter here means no PR is ever checked.
   pull_request:
-  # Direct pushes to the long-lived branches. Feature branches are covered by their
-  # PR run, so listing them here would only duplicate it.
+  # Every push, every branch. This job is ~1 minute, so a development branch or
+  # worktree gets lint feedback while it is still being worked on, before a PR
+  # exists to hang a check off. Contrast test_analysis.yml, which is far too
+  # heavy to run per-push and stays scoped to the long-lived branches.
   push:
-    branches: [ main, zarr3, tdp-gws, tdp-gws-integration ]
   workflow_dispatch:
 
 # A force-push should supersede its own in-flight run, not queue behind it.
