@@ -15,6 +15,7 @@ to capture the task list the convert step would dispatch.
 
 Run: python tests/direct/test_convert_dedup.py   (or under pytest, marked unit)
 """
+
 import argparse
 import sys
 import types
@@ -24,8 +25,10 @@ import pandas as pd
 
 try:
     import pytest
+
     _mark = pytest.mark.unit
 except ImportError:  # allow bare `python tests/direct/test_convert_dedup.py`
+
     def _mark(f):
         return f
 
@@ -72,8 +75,13 @@ _stub(
 )
 _stub(
     "lib.preprocess.file_utils",
-    get_metadata_wildcard_combos=lambda s, m: pd.DataFrame(columns=["plate", "well", "tile"]),
-    get_sample_fps=lambda df, **k: ["r1.nd2", "r2.nd2"],  # combined all-rounds file list
+    get_metadata_wildcard_combos=lambda s, m: pd.DataFrame(
+        columns=["plate", "well", "tile"]
+    ),
+    get_sample_fps=lambda df, **k: [
+        "r1.nd2",
+        "r2.nd2",
+    ],  # combined all-rounds file list
 )
 _stub(
     "lib.shared.file_utils",
@@ -115,7 +123,9 @@ def _run(image_type, combos_df, tmp_path):
 
     calls = []
     orig_rp, orig_ic = rpd.run_parallel, rpd.run_ic_step
-    rpd.run_parallel = lambda tasks, fn, workers, label, **k: (calls.append((label, list(tasks))) or 0)
+    rpd.run_parallel = lambda tasks, fn, workers, label, **k: (
+        calls.append((label, list(tasks))) or 0
+    )
     rpd.run_ic_step = lambda *a, **k: 0
     try:
         rpd.process(image_type, config, args)
@@ -123,7 +133,9 @@ def _run(image_type, combos_df, tmp_path):
         rpd.run_parallel, rpd.run_ic_step = orig_rp, orig_ic
 
     convert = [t for lbl, t in calls if lbl.startswith("Convert images")]
-    assert len(convert) == 1, f"expected one convert step, got labels {[c[0] for c in calls]}"
+    assert len(convert) == 1, (
+        f"expected one convert step, got labels {[c[0] for c in calls]}"
+    )
     return convert[0]
 
 

@@ -42,9 +42,7 @@ from lib.sbs.eval_mapping import (
 )
 from lib.shared.eval_segmentation import plot_cell_density_heatmap
 
-SBS_BASE = Path(
-    "/mnt/work/broad-analysis/broad-tdp-gws/analysis/brieflow_output/sbs"
-)
+SBS_BASE = Path("/mnt/work/broad-analysis/broad-tdp-gws/analysis/brieflow_output/sbs")
 TSV_WELL = SBS_BASE / "tsvs" / "4" / "A" / "1"  # plate 4, well A1
 GOLDEN_WELL = SBS_BASE / "parquets" / "4" / "A" / "1"
 
@@ -98,8 +96,8 @@ def _assert_identical(new, ref, float_rtol=1e-9):
     )
     fcols = [c for c in new.columns if pd.api.types.is_float_dtype(new[c])]
     nfcols = [c for c in new.columns if c not in fcols]
-    assert new[nfcols].reset_index(drop=True).equals(
-        ref[nfcols].reset_index(drop=True)
+    assert (
+        new[nfcols].reset_index(drop=True).equals(ref[nfcols].reset_index(drop=True))
     ), "non-float value mismatch between combine_tile_dfs and reference"
     for c in fcols:
         x = new[c].astype("float64").to_numpy()
@@ -304,16 +302,19 @@ def test_fallback_corrupt_tile_raises(tmp_path, monkeypatch):
     other read error (e.g. ParserError) must propagate and fail the rule.
     """
     from lib.shared import combine_dfs as _cd
+
     monkeypatch.setattr(_cd, "_HAS_POLARS", False)  # force pandas fallback
     good = tmp_path / "good.tsv"
     _write_tsv(good, ["well", "tile", "cell"], [["A1", 0, 1]])
     bad = tmp_path / "bad.tsv"
     _write_tsv(bad, ["well", "tile", "cell"], [["A1", 1, 1]])
     real_read = _cd.pd.read_csv
+
     def _fake(path, *a, **k):
         if str(path) == str(bad):
             raise pd.errors.ParserError("Error tokenizing data")
         return real_read(path, *a, **k)
+
     monkeypatch.setattr(_cd.pd, "read_csv", _fake)
     with pytest.raises(pd.errors.ParserError):
         _cd.combine_tile_dfs([str(good), str(bad)])
@@ -323,6 +324,7 @@ def test_fallback_corrupt_tile_raises(tmp_path, monkeypatch):
 def test_fallback_skips_empty_tile(tmp_path, monkeypatch):
     """Pandas fallback still skips genuinely empty tiles (EmptyDataError)."""
     from lib.shared import combine_dfs as _cd
+
     monkeypatch.setattr(_cd, "_HAS_POLARS", False)
     good = tmp_path / "good.tsv"
     _write_tsv(good, ["well", "tile", "cell"], [["A1", 0, 1]])
@@ -424,19 +426,29 @@ def test_projection_mapping_sbs_info(small_frames):
     cols = ["well", "tile", "cell"]
     for mt in ("one", "any"):
         full = plot_cell_mapping_heatmap(
-            cells.copy(), sbs.copy(), barcodes,
-            mapping_to=mt, mapping_strategy="gene symbols",
-            return_plot=False, return_summary=True,
+            cells.copy(),
+            sbs.copy(),
+            barcodes,
+            mapping_to=mt,
+            mapping_strategy="gene symbols",
+            return_plot=False,
+            return_summary=True,
         )
         proj = plot_cell_mapping_heatmap(
-            cells.copy(), sbs[cols].copy(), barcodes,
-            mapping_to=mt, mapping_strategy="gene symbols",
-            return_plot=False, return_summary=True,
+            cells.copy(),
+            sbs[cols].copy(),
+            barcodes,
+            mapping_to=mt,
+            mapping_strategy="gene symbols",
+            return_plot=False,
+            return_summary=True,
         )
         assert full.equals(proj), f"cell mapping summary differs for mapping_to={mt}"
     full_ov = mapping_overview(sbs.copy(), cells.copy(), sort_by="peak")
     proj_ov = mapping_overview(sbs[cols].copy(), cells.copy(), sort_by="peak")
-    assert full_ov.equals(proj_ov), "mapping_overview summary differs under sbs_info projection"
+    assert full_ov.equals(proj_ov), (
+        "mapping_overview summary differs under sbs_info projection"
+    )
 
 
 @pytest.mark.integration
@@ -446,9 +458,15 @@ def test_projection_mapping_reads(small_frames):
     cols = ["cell", "well", "tile", "barcode", "Q_min", "peak"]
     proj = reads[cols]
     for var in ("peak", "Q_min"):
-        full_s, _ = plot_mapping_vs_threshold(reads.copy(), small_frames["barcodes"], var, num_thresholds=5)
-        proj_s, _ = plot_mapping_vs_threshold(proj.copy(), small_frames["barcodes"], var, num_thresholds=5)
-        assert full_s.equals(proj_s), f"reads projection changes plot_mapping_vs_threshold summary for {var}"
+        full_s, _ = plot_mapping_vs_threshold(
+            reads.copy(), small_frames["barcodes"], var, num_thresholds=5
+        )
+        proj_s, _ = plot_mapping_vs_threshold(
+            proj.copy(), small_frames["barcodes"], var, num_thresholds=5
+        )
+        assert full_s.equals(proj_s), (
+            f"reads projection changes plot_mapping_vs_threshold summary for {var}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -461,17 +479,30 @@ from lib.shared.parquet_io import read_table, resolve_table_path, read_parquet
 from lib.sbs.call_cells import call_cells as _call_cells
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
-BARCODE_LIB_FP = "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+BARCODE_LIB_FP = (
+    "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+)
 _CHAIN_TILES = [
-    t for t in ("P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100")
+    t
+    for t in ("P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100")
     if (GOLDEN_DIR / f"{t}__reads.tsv").exists()
     and (GOLDEN_DIR / f"{t}__cells.tsv").exists()
 ]
 MULTI_CC_KWARGS = dict(
-    q_min=0.0, map_start=1, map_end=12, prefix_map="prefix_map",
-    recomb_start=13, recomb_end=15, prefix_recomb="prefix_recomb",
-    recomb_filter_col="Q_recomb", recomb_q_thresh=0.1, error_correct=True,
-    sort_calls="peak", max_distance=1, n_barcodes=2, barcode_info_cols=None,
+    q_min=0.0,
+    map_start=1,
+    map_end=12,
+    prefix_map="prefix_map",
+    recomb_start=13,
+    recomb_end=15,
+    prefix_recomb="prefix_recomb",
+    recomb_filter_col="Q_recomb",
+    recomb_q_thresh=0.1,
+    error_correct=True,
+    sort_calls="peak",
+    max_distance=1,
+    n_barcodes=2,
+    barcode_info_cols=None,
 )
 
 
@@ -523,16 +554,28 @@ def test_resolve_table_path_prefers_parquet(tmp_path):
     # both present -> parquet wins, regardless of candidate suffix
     write_parquet(df, str(d / "both.parquet"))
     (d / "both.tsv").write_text("well\ttile\nA1\t2\n")
-    assert resolve_table_path(str(d / "both.tsv")) == (str(d / "both.parquet"), "parquet")
-    assert resolve_table_path(str(d / "both.parquet")) == (str(d / "both.parquet"), "parquet")
+    assert resolve_table_path(str(d / "both.tsv")) == (
+        str(d / "both.parquet"),
+        "parquet",
+    )
+    assert resolve_table_path(str(d / "both.parquet")) == (
+        str(d / "both.parquet"),
+        "parquet",
+    )
 
     # tsv only -> tsv (even when asked with a .parquet candidate)
     (d / "tsvonly.tsv").write_text("well\ttile\nA1\t2\n")
-    assert resolve_table_path(str(d / "tsvonly.parquet")) == (str(d / "tsvonly.tsv"), "tsv")
+    assert resolve_table_path(str(d / "tsvonly.parquet")) == (
+        str(d / "tsvonly.tsv"),
+        "tsv",
+    )
 
     # parquet only -> parquet
     write_parquet(df, str(d / "pqonly.parquet"))
-    assert resolve_table_path(str(d / "pqonly.tsv")) == (str(d / "pqonly.parquet"), "parquet")
+    assert resolve_table_path(str(d / "pqonly.tsv")) == (
+        str(d / "pqonly.parquet"),
+        "parquet",
+    )
 
     # 0-byte parquet with a real tsv sibling -> falls through to tsv
     (d / "zpq.parquet").write_bytes(b"")
@@ -580,10 +623,18 @@ def test_combine_parquet_only_uses_polars_fast_path(tmp_path):
         pytest.skip("polars not installed")
     from lib.shared import combine_dfs as _cd
 
-    hdr_df1 = pd.DataFrame({"well": ["A1"], "tile": [2], "cell": [1], "i": [10.5333333333]})
-    hdr_df2 = pd.DataFrame({"well": ["A1"], "tile": [3], "cell": [1], "i": [20.7000000001]})
-    t1 = tmp_path / "1"; t1.mkdir(); write_parquet(hdr_df1, str(t1 / "reads.parquet"))
-    t2 = tmp_path / "2"; t2.mkdir(); write_parquet(hdr_df2, str(t2 / "reads.parquet"))
+    hdr_df1 = pd.DataFrame(
+        {"well": ["A1"], "tile": [2], "cell": [1], "i": [10.5333333333]}
+    )
+    hdr_df2 = pd.DataFrame(
+        {"well": ["A1"], "tile": [3], "cell": [1], "i": [20.7000000001]}
+    )
+    t1 = tmp_path / "1"
+    t1.mkdir()
+    write_parquet(hdr_df1, str(t1 / "reads.parquet"))
+    t2 = tmp_path / "2"
+    t2.mkdir()
+    write_parquet(hdr_df2, str(t2 / "reads.parquet"))
     cands = [str(t1 / "reads.parquet"), str(t2 / "reads.parquet")]
 
     _cd._READ_STATS["polars"] = 0
@@ -599,9 +650,11 @@ def test_combine_tsv_only_via_parquet_candidate(tmp_path):
     """Passing .parquet candidates for a TSV-only well still combines via tsv
     (the production backward-compat path: no parquet sibling exists)."""
     hdr = ["well", "tile", "cell", "i"]
-    t1 = tmp_path / "1"; t1.mkdir()
+    t1 = tmp_path / "1"
+    t1.mkdir()
     _write_tsv(t1 / "reads.tsv", hdr, [["A1", 2, 1, 10.5]])
-    t2 = tmp_path / "2"; t2.mkdir()
+    t2 = tmp_path / "2"
+    t2.mkdir()
     _write_tsv(t2 / "reads.tsv", hdr, [["A1", 3, 1, 20.7]])
     cands = [str(t1 / "reads.parquet"), str(t2 / "reads.parquet")]  # no parquet on disk
     tsvs = [str(t1 / "reads.tsv"), str(t2 / "reads.tsv")]
@@ -619,17 +672,26 @@ def test_combine_mixed_well_union_and_cast(tmp_path):
     a_df = pd.DataFrame(
         {"well": ["A1"], "tile": [2], "cell": [1], "area": [69], "i": [10.5333333333]}
     )
-    ta = tmp_path / "a"; ta.mkdir()
-    write_parquet(a_df, str(ta / "reads.parquet"))     # parquet for combine
-    _write_tsv(ta / "reads.tsv", hdr7, [["A1", 2, 1, 69, 10.5333333333]])  # tsv for reference
+    ta = tmp_path / "a"
+    ta.mkdir()
+    write_parquet(a_df, str(ta / "reads.parquet"))  # parquet for combine
+    _write_tsv(
+        ta / "reads.tsv", hdr7, [["A1", 2, 1, 69, 10.5333333333]]
+    )  # tsv for reference
 
-    tb = tmp_path / "b"; tb.mkdir()
+    tb = tmp_path / "b"
+    tb.mkdir()
     _write_tsv(tb / "reads.tsv", hdr8, [["A1", 3, 1, 80, 12.5, 4]])  # tsv only
 
-    tc = tmp_path / "c"; tc.mkdir()
+    tc = tmp_path / "c"
+    tc.mkdir()
     (tc / "reads.tsv").write_bytes(b"")  # 0-byte -> dropped
 
-    cands = [str(ta / "reads.parquet"), str(tb / "reads.parquet"), str(tc / "reads.parquet")]
+    cands = [
+        str(ta / "reads.parquet"),
+        str(tb / "reads.parquet"),
+        str(tc / "reads.parquet"),
+    ]
     tsvs = [str(ta / "reads.tsv"), str(tb / "reads.tsv"), str(tc / "reads.tsv")]
 
     new = combine_tile_dfs(cands)
@@ -651,9 +713,11 @@ def test_combine_corrupt_parquet_raises(tmp_path):
     a non-empty file; both the polars fast path and the pandas fallback error out
     on the bad bytes and the error propagates."""
     good_df = pd.DataFrame({"well": ["A1"], "tile": [2], "cell": [1]})
-    tg = tmp_path / "good"; tg.mkdir()
+    tg = tmp_path / "good"
+    tg.mkdir()
     write_parquet(good_df, str(tg / "reads.parquet"))
-    tb = tmp_path / "bad"; tb.mkdir()
+    tb = tmp_path / "bad"
+    tb.mkdir()
     (tb / "reads.parquet").write_bytes(b"PAR1 not a real parquet file \x00\x01\x02")
     cands = [str(tg / "reads.parquet"), str(tb / "reads.parquet")]
     with pytest.raises(Exception):
@@ -670,8 +734,13 @@ def test_shared_writer_ext_branch_keeps_phenotype_tsv(tmp_path, monkeypatch):
     import lib.shared.image_io as img_mod
 
     df = pd.DataFrame(
-        {"well": ["A1", "A1"], "tile": [0, 0], "cell": [1, 2],
-         "i": [1.5, 2.25], "j": [3.5, 4.75]}
+        {
+            "well": ["A1", "A1"],
+            "tile": [0, 0],
+            "cell": [1, 2],
+            "i": [1.5, 2.25],
+            "j": [3.5, 4.75],
+        }
     )
     monkeypatch.setattr(epm_mod, "extract_phenotype_minimal", lambda **k: df.copy())
     monkeypatch.setattr(img_mod, "read_image", lambda p: np.zeros((2, 2)))
@@ -761,12 +830,15 @@ def test_call_cells_chain_over_parquet_reads(tmp_path):
     write_parquet(reads_tsv, str(pq))
 
     # chain link: read_table must reconstruct the exact reads frame from parquet
-    reads_via_read_table = read_table(str(tmp_path / "reads.tsv"))  # candidate suffix ignored
+    reads_via_read_table = read_table(
+        str(tmp_path / "reads.tsv")
+    )  # candidate suffix ignored
     pd.testing.assert_frame_equal(reads_via_read_table, reads_tsv, check_exact=True)
 
     barcode_lib = pd.read_csv(BARCODE_LIB_FP, sep="\t")
     cells = _call_cells(
-        reads_data=reads_via_read_table, df_barcode_library=barcode_lib.copy(),
+        reads_data=reads_via_read_table,
+        df_barcode_library=barcode_lib.copy(),
         **MULTI_CC_KWARGS,
     )
     golden = pd.read_csv(GOLDEN_DIR / f"{tile}__cells.tsv", sep="\t")
@@ -780,8 +852,11 @@ def test_call_cells_chain_over_parquet_reads(tmp_path):
         assert (g.isna() == e.isna()).all(), f"NA positions differ in {c}"
         if pd.api.types.is_float_dtype(e):
             np.testing.assert_allclose(
-                g.astype(float).to_numpy(), e.astype(float).to_numpy(),
-                rtol=1e-6, atol=0.0, equal_nan=True,
+                g.astype(float).to_numpy(),
+                e.astype(float).to_numpy(),
+                rtol=1e-6,
+                atol=0.0,
+                equal_nan=True,
             )
         else:
             m = ~e.isna()

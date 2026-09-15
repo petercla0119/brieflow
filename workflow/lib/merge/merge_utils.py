@@ -727,6 +727,20 @@ def fast_merge_example(
 
 
 def filter_low_score_seeds(df, min_keep=5):
+    """Drop seed matches whose score is a low outlier, keeping at least min_keep.
+
+    Cutoff is the standard Tukey fence, Q1 - 1.5 * IQR, over the "score" column.
+    If that would leave fewer than min_keep rows the filter is abandoned and the
+    min_keep highest-scoring rows are returned instead, so a tight score
+    distribution cannot starve downstream alignment.
+
+    Args:
+        df (pd.DataFrame): Seed matches carrying a "score" column.
+        min_keep (int, optional): Floor on the number of rows returned. Defaults to 5.
+
+    Returns:
+        pd.DataFrame: The retained subset of `df`.
+    """
     if len(df) <= min_keep:
         return df
     q1, q3 = df["score"].quantile([0.25, 0.75])

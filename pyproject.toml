@@ -82,6 +82,11 @@ pydocstyle = { convention = "google" }
 # Ignore all checks for tests (including unit/ and integration/ subdirs)
 "tests/*.py" = ["ALL"]
 "tests/**/*.py" = ["ALL"]
+# Direct runners: the fork-only scripts/direct/ tree, treated like workflow/scripts/
+# above (module and top-level-function docstrings not required of a CLI entrypoint),
+# and its tests treated like tests/ below it.
+"scripts/direct/*.py" = ["D100", "D103"]
+"scripts/direct/tests/**/*.py" = ["ALL"]
 # Visualization code
 "visualization/*.py" = ["ALL"]
 

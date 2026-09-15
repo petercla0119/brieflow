@@ -67,6 +67,9 @@ def align_cycles(
         verbose (bool, optional): If True, print detailed alignment information including
             calculated offsets for each cycle. Useful for debugging alignment issues.
             Defaults to False.
+        compute_qc (bool, optional): If True, measure post-alignment residual offsets
+            on the DAPI and base channels and report them as QC metrics. Adds an extra
+            pass over the aligned stack, so it is off by default. Defaults to False.
 
     Returns:
         np.ndarray: SBS image aligned across cycles.
@@ -317,7 +320,9 @@ def align_cycles(
 
     # Alignment QC — residual on aligned cycles and base channels
     if compute_qc:
-        if aligned.shape[1] > 0 and (channel_order is None or channel_order[0] == "DAPI"):
+        if aligned.shape[1] > 0 and (
+            channel_order is None or channel_order[0] == "DAPI"
+        ):
             dapi_residual = calculate_offsets(
                 aligned[:, 0], upsample_factor=upsample_factor
             )
