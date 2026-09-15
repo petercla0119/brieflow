@@ -53,10 +53,12 @@ def test_atomic_write_parquet_roundtrip():
 def test_merge_worker_cap():
     orig = rpd._available_gb
     try:
-        rpd._available_gb = lambda: 700.0   # 700 // 70 = 10
+        # derive from WELL_PEAK_GB so retuning the constant does not break the test
+        gb = rpd.WELL_PEAK_GB
+        rpd._available_gb = lambda: 10.0 * gb     # mem cap = 10
         assert rpd._merge_worker_cap(8) == 8      # requested < mem cap
         assert rpd._merge_worker_cap(20) == 10    # capped by mem
-        rpd._available_gb = lambda: 140.0   # 140 // 70 = 2
+        rpd._available_gb = lambda: 2.0 * gb      # mem cap = 2
         assert rpd._merge_worker_cap(8) == 2
         rpd._available_gb = lambda: None    # unknown -> conservative default 2
         assert rpd._merge_worker_cap(8) == 2
