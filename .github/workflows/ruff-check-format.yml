@@ -1,10 +1,19 @@
 name: Ruff Check & Format
 
 on:
-  push:
-    branches: [ main ]
+  # Every PR, whatever its base -- fork work targets tdp-gws-integration, not main,
+  # so a `branches: [main]` filter here means no PR is ever checked.
   pull_request:
-    branches: [ main ]
+  # Direct pushes to the long-lived branches. Feature branches are covered by their
+  # PR run, so listing them here would only duplicate it.
+  push:
+    branches: [ main, zarr3, tdp-gws, tdp-gws-integration ]
+  workflow_dispatch:
+
+# A force-push should supersede its own in-flight run, not queue behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:

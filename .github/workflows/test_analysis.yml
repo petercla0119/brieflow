@@ -1,10 +1,20 @@
 name: Test Analysis
 
 on:
+  # Every PR, whatever its base -- fork work targets tdp-gws-integration, not main,
+  # so a `branches: [main]` filter here means no PR is ever checked.
   pull_request:
-    branches: [main]
+  # Direct pushes to the long-lived branches. This job builds a conda env and runs the
+  # whole small-test pipeline, so it is deliberately not run on every feature-branch
+  # push; the PR run covers those.
   push:
-    branches: [main]
+    branches: [ main, zarr3, tdp-gws, tdp-gws-integration ]
+  workflow_dispatch:
+
+# A force-push should supersede its own in-flight run, not queue behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-analysis:
