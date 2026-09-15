@@ -495,6 +495,19 @@ def _extract_sbs_info_one(task):
 # Main processing
 # ---------------------------------------------------------------------------
 
+def combine_folds_into_postseg(step, combine):
+    """True when combine should run at the end of `--step post-seg` (opt-in via --combine).
+
+    ponytail: default OFF so the CPU->GPU->CPU relay's `--step post-seg` stays extract-only
+    and the standalone `--step combine` / run_sbs_combine_both.sh path is untouched. When set,
+    the fold-in mirrors the phenotype runner (combine as part of post-seg) but runs the SAME
+    combine code and — like standalone `--step combine` — reloads ALL tiles, so per-well output
+    is identical regardless of any --tile-start/--tile-end post-seg sharding. Skip-guarded by
+    out_exists() so a fully-combined tree is a no-op (no extra compute on a saturating run).
+    """
+    return step == "post-seg" and combine
+
+
 def process_sbs(config, args):
     sbs_cfg = config["sbs"]
     pp_cfg = config.get("preprocess", {})
@@ -550,7 +563,7 @@ def process_sbs(config, args):
     run_pre_seg = args.step in ("tiles", "pre-seg", "all")
     run_segment = args.step in ("tiles", "segment", "all")
     run_post_seg = args.step in ("tiles", "post-seg", "all")
-    run_combine = args.step in ("combine", "all")
+    run_combine = args.step in ("combine", "all") or combine_folds_into_postseg(args.step, args.combine)
 
     # ponytail: gate tile_combos to empty for phases that don't run
     if not (run_pre_seg or run_segment or run_post_seg):
@@ -701,8 +714,9 @@ def process_sbs(config, args):
     if not run_combine:
         return errs
 
-    # In combine-only mode, reload ALL tiles (not the SLURM array subset)
-    if args.step == "combine":
+    # In combine-only mode (or the opt-in post-seg fold-in), reload ALL tiles (not the
+    # SLURM array subset) so per-well combine is complete and output-identical.
+    if args.step == "combine" or combine_folds_into_postseg(args.step, args.combine):
         _all = pd.read_csv(pp_cfg["sbs_combo_fp"], sep="\t").astype(str)
         if args.plate_filter:
             _all = _all[_all["plate"] == str(args.plate_filter)]
@@ -911,6 +925,11 @@ def main():
                    help="End index into sorted tile list (exclusive)")
     p.add_argument("--step", choices=["tiles", "pre-seg", "segment", "post-seg", "combine", "all"], default="all",
                    help="tiles=per-tile steps 1-11, pre-seg=steps 1-6 (CPU), segment=step 7 (GPU), post-seg=steps 8-11 (CPU), combine=merge+eval 12-16, all=everything")
+    p.add_argument("--combine", action="store_true",
+                   help="Opt-in: fold combine (steps 12-16) into `--step post-seg`, mirroring the "
+                        "phenotype runner so both modalities end post-seg combined-and-ready-for-merge. "
+                        "Default OFF (relay-safe); runs the same combine code, reloads all tiles, and is "
+                        "skip-guarded by out_exists(). No effect on other --step values.")
     p.add_argument("--align-workers", type=int, default=None,
                    help="Workers for alignment step (default: same as --workers)")
     p.add_argument("--seg-workers", type=int, default=None,
