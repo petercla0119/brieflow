@@ -97,6 +97,10 @@ def initialize_cellpose_model(
             - Cellpose 4.x: Only supports 'cpsam'
             - Custom model paths (containing path separators) are supported in both versions
         gpu (bool, optional): Whether to use GPU for inference. Default is False.
+        device (torch.device, optional): Explicit device to place the model on. When
+            gpu=True and this is None, select_gpu_device() picks the visible CUDA
+            device with the most free VRAM. Pass a device to pin a worker to a
+            specific GPU instead. Defaults to None.
 
     Returns:
         CellposeModel: Initialized Cellpose model ready for inference.

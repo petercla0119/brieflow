@@ -74,7 +74,8 @@ def make_loc(img_fmt, plate, well=None, tile=None, cycle=None):
 
 
 def _zarr_node_has_chunks(p):
-    """True if a zarr node dir holds >=1 chunk file (real data), not just metadata.
+    """Return True if a zarr node dir holds >=1 chunk file, not just metadata.
+
     A hollow tile (OOM/interrupt mid-write) keeps a stub zarr.json + empty data dirs;
     the old dir-non-empty / size>0 checks wrongly accepted it, so every downstream
     stage skipped it and truncation propagated silently (457 hollow SBS aligned tiles,
@@ -93,6 +94,7 @@ def _zarr_node_has_chunks(p):
 
 def _zarr_tile_ok(p):
     """Validate a zarr node dir inside a .zarr store.
+
     - A label mask (nuclei/cells) can be legitimately all-background: zarr writes NO chunk
       files, only array metadata. Trust it once 0/zarr.json exists; reject a stub that never
       got that far. (Requiring chunks here falsely re-ran valid empty masks -- 2026-09-08.)
@@ -126,6 +128,7 @@ def out_exists(path):
 
 def _nonempty_tile_count(input_paths):
     """Count per-tile inputs holding >=1 row (parquet-or-tsv, prefer parquet).
+
     Used to validate a combined well parquet is complete before trusting it:
     empty tiles legitimately produce no rows, so completeness is measured
     against non-empty inputs, not the raw tile count.

@@ -1,5 +1,6 @@
-"""Streaming final merge — attach the full CP phenotype feature table to the
-deduplicated merge via a memory-bounded polars left join.
+"""Streaming final merge of the full CP phenotype feature table.
+
+Attaches it to the deduplicated merge via a memory-bounded polars left join.
 
 Both callers wrap this one function so the two paths can never drift:
   - Snakemake:    workflow/scripts/merge/final_merge.py

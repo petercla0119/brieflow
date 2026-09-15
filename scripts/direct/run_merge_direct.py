@@ -72,6 +72,12 @@ class Paths:
     """
 
     def __init__(self, out_root, plate, well):
+        """Probe the output root for a zarr-style metadata path and pick a layout.
+
+        Finding {plate}/{row}/{col}/combined_metadata.parquet selects the nested
+        zarr naming for every subsequent path; otherwise the flat P-/W- prefix is
+        used. Detection happens once here so callers never branch on layout.
+        """
         self.root = Path(out_root)
         r, c = _row_col(well)
         zarr_probe = (
@@ -98,30 +104,37 @@ class Paths:
     # inputs
     @property
     def ph_metadata(self):
+        """Per-well phenotype metadata parquet, written by preprocess."""
         return self._parq("preprocess/metadata/phenotype", "combined_metadata")
 
     @property
     def sbs_metadata(self):
+        """Per-well SBS metadata parquet, written by preprocess."""
         return self._parq("preprocess/metadata/sbs", "combined_metadata")
 
     @property
     def ph_info(self):
+        """Per-well phenotype_info parquet (one row per segmented cell)."""
         return self._parq("phenotype/parquets", "phenotype_info")
 
     @property
     def sbs_info(self):
+        """Per-well sbs_info parquet, produced by the SBS combine step."""
         return self._parq("sbs/parquets", "sbs_info")
 
     @property
     def sbs_cells(self):
+        """Per-well SBS cells parquet holding the called barcode per cell."""
         return self._parq("sbs/parquets", "cells")
 
     @property
     def ph_cp_min(self):
+        """Per-well minimal CellProfiler feature parquet used for alignment."""
         return self._parq("phenotype/parquets", "phenotype_cp_min")
 
     @property
     def ph_cp_full(self):
+        """Per-well full CellProfiler feature parquet joined into the final merge."""
         return self._parq("phenotype/parquets", "phenotype_cp")
 
     # outputs

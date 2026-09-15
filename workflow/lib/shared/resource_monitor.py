@@ -128,6 +128,12 @@ class ResourceMonitor:
         n_workers=None,
         plate=None,
     ):
+        """Configure a monitor for one step without starting it.
+
+        `pid` defaults to the current process and the whole tree beneath it is
+        sampled, so pool workers are included. `stage`, `n_workers` and `plate`
+        are recorded verbatim on the output row to make runs comparable.
+        """
         self.step = step
         self.pid = pid or os.getpid()
         self.out = _resolve_out(out)
@@ -170,15 +176,22 @@ class ResourceMonitor:
 
     # -- context manager -----------------------------------------------------
     def __enter__(self):
+        """Start sampling on `with` entry and return the monitor itself."""
         self.start()
         return self
 
     def __exit__(self, *exc):
+        """Stop sampling and write the row; never suppresses the step's exception."""
         self.stop()
         return False  # never suppress the step's own exceptions
 
     # -- lifecycle -----------------------------------------------------------
     def start(self):
+        """Begin sampling in a daemon thread and return self.
+
+        A no-op (with a warning) when psutil is unavailable, so an unmeasured
+        step still runs rather than failing on a missing optional dependency.
+        """
         if psutil is None:
             print(
                 f"  [monitor] psutil unavailable — '{self.step}' not measured",
@@ -192,6 +205,7 @@ class ResourceMonitor:
         return self
 
     def stop(self):
+        """Stop sampling, finalize CPU/IO totals, and append the benchmark row."""
         if psutil is None:
             return
         self._stop.set()
@@ -419,7 +433,10 @@ class ResourceMonitor:
 
 
 def monitor_step(step, **kw):
-    """Convenience factory mirroring the class, for `with monitor_step(...):`."""
+    """Build a ResourceMonitor for use as a context manager.
+
+    Convenience wrapper so a step reads as `with monitor_step("name"):`.
+    """
     return ResourceMonitor(step, **kw)
 
 

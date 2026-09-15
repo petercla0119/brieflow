@@ -82,8 +82,10 @@ def out_exists(path):
 
 
 def atomic_write_parquet(df, path):
-    """Write to a sibling .tmp then os.replace — atomic on same fs, so a crash
-    mid-write never leaves a size>0 partial that the out_exists() skip guard trusts.
+    """Write a parquet atomically, via a sibling .tmp plus os.replace.
+
+    Atomic on the same filesystem, so a crash mid-write never leaves a size>0
+    partial that the out_exists() skip guard would trust.
     """
     path = str(path)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -189,10 +191,12 @@ def run_parallel(
 
 
 def _worker_init_gpu(num_gpus, counter, lock, omp_threads=4):
-    """Worker initializer for GPU steps. Pins each worker to a distinct GPU via an
-    atomic round-robin counter (spawn-safe Manager proxy): N workers map to GPUs
-    0..N-1. Replaces the old os.getpid() % num_gpus hash, which collided and left
-    GPUs idle (2026-08-27: 4 workers -> GPUs {0,2,3,3}, GPU 1 unused).
+    """Pin each GPU-step worker to a distinct GPU.
+
+    Uses an atomic round-robin counter (spawn-safe Manager proxy), so N workers
+    map to GPUs 0..N-1. Replaces the old os.getpid() % num_gpus hash, which
+    collided and left GPUs idle (2026-08-27: 4 workers -> GPUs {0,2,3,3}, GPU 1
+    unused).
     """
     os.environ["OMP_NUM_THREADS"] = str(omp_threads)
     with lock:
@@ -207,8 +211,10 @@ def _worker_init_gpu(num_gpus, counter, lock, omp_threads=4):
 
 
 def _align_array(data, align_cfg):
-    """Channel alignment transform (custom offsets + phenotype FFT alignment). Pure
-    in-memory; no I/O. Shared by the fused pre-seg worker.
+    """Apply the channel alignment transform to an in-memory array.
+
+    Custom offsets plus phenotype FFT alignment. Pure in-memory, no I/O. Shared
+    by the fused pre-seg worker.
     """
     from lib.phenotype.align_channels import align_phenotype_channels
     from lib.shared.align import apply_custom_offsets
@@ -458,10 +464,11 @@ def _available_gb():
 
 
 def _merge_worker_cap(requested):
-    """Merge holds a full well in RAM (WELL_PEAK_GB); size concurrency by memory,
-    not cores. Two OOMs set this: 6 parallel wells killed a 173 GB box (2026-08-08),
-    and plate 9 hit 133 GB in a single well (2026-09-10), which raised the estimate
-    from 70 to 135 GB.
+    """Cap merge concurrency by available memory rather than by core count.
+
+    Merge holds a full well in RAM (WELL_PEAK_GB). Two OOMs set this: 6 parallel
+    wells killed a 173 GB box (2026-08-08), and plate 9 hit 133 GB in a single
+    well (2026-09-10), which raised the estimate from 70 to 135 GB.
     """
     avail = _available_gb()
     mem_cap = max(1, int(avail // WELL_PEAK_GB)) if avail else 2
@@ -511,9 +518,11 @@ def _merge_well_one(task):
 
 
 def _verify_aligned_complete(tile_combos, phen_fp, fmt):
-    """Return [(plate, well, tile), ...] whose 'aligned' output is missing. Guards the
-    CPU->GPU handoff: segmentation reads 'aligned', so a partial pre-seg would silently
-    under-segment. Resumable out_exists() skips don't assert completeness -- this does.
+    """Return [(plate, well, tile), ...] whose 'aligned' output is missing.
+
+    Guards the CPU->GPU handoff: segmentation reads 'aligned', so a partial
+    pre-seg would silently under-segment. Resumable out_exists() skips do not
+    assert completeness -- this does.
     """
     missing = []
     for _, r in tile_combos.iterrows():

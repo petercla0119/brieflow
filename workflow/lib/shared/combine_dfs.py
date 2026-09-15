@@ -1,5 +1,6 @@
-"""Combine per-tile intermediates (parquet-or-tsv, prefer parquet) into one
-dtype-normalized pandas DataFrame.
+"""Combine per-tile intermediates into one dtype-normalized pandas DataFrame.
+
+Reads parquet-or-tsv, preferring parquet.
 
 Shared by the Snakemake combine script (workflow/scripts/shared/combine_dfs.py)
 and the direct runner (scripts/direct/run_sbs_direct.py --step combine) so the
