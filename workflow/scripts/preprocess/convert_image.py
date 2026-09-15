@@ -4,7 +4,11 @@ Uses the unified save_image() I/O layer which dispatches based on output path su
 """
 
 from lib.preprocess.preprocess import convert_to_array, get_data_config
-from lib.shared.image_io import save_image
+from lib.shared.image_io import (
+    DEFAULT_MAX_LEVELS,
+    DEFAULT_ZARR_COMPRESSION,
+    save_image,
+)
 
 # Get data configuration from rule name
 rule_name = snakemake.rule
@@ -37,6 +41,6 @@ save_image(
     image_array,
     snakemake.output[0],
     channel_names=channel_names,
-    max_levels=all_config.get("zarr_max_levels", 5),
-    compression=all_config.get("zarr_compression", "blosc-zstd-bitshuffle"),
+    max_levels=all_config.get("zarr_max_levels", DEFAULT_MAX_LEVELS),
+    compression=all_config.get("zarr_compression", DEFAULT_ZARR_COMPRESSION),
 )

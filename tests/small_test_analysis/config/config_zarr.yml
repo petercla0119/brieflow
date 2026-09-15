@@ -8,4 +8,4 @@ all:
   root_fp: brieflow_output_zarr/
   image_format: zarr
   zarr_max_levels: 5  # Pyramid resolution levels (#28); 1 disables downsampling
-  zarr_compression: blosc-zstd-bitshuffle  # (#27) lossless Blosc(zstd)+bitshuffle; "none" to disable
+  zarr_compression: blosc-zstd-bitshuffle  # (#27) blosc-<cname>[-<shuffle>][:<clevel>], or "none" to disable

@@ -108,9 +108,9 @@ def _read_ome(zarr_path: Path) -> dict:
 
 class TestNGFFCompliance:
     """Validate that write_image_omezarr produces spec-compliant
-    OME-NGFF v0.4 (Zarr v2) metadata."""
+    OME-NGFF v0.5 (Zarr v3) metadata."""
 
-    def test_v04_metadata_structure(self, tmp_path):
+    def test_v05_metadata_structure(self, tmp_path):
         """Check multiscales version, axes, datasets, and coordinateTransformations."""
         out = tmp_path / "img.ome.zarr"
         img = np.arange(2 * 64 * 80, dtype=np.uint16).reshape((2, 64, 80))
@@ -579,11 +579,17 @@ class TestCompressionAndPyramid:
         ms0 = root.attrs["ome"]["multiscales"][0]
         assert ms0["downsamplingMethod"] == "nearest"
 
-    def test_compression_codec_is_blosc_zstd_bitshuffle(self, tmp_path):
-        """Every level is compressed with Blosc(zstd) + bitshuffle by default."""
+    def test_compression_applies_to_every_level(self, tmp_path):
+        """The requested codec is attached to every pyramid level, not just level 0."""
         out = tmp_path / "comp.zarr"
         img = np.random.randint(0, 4000, (2, 128, 128), dtype=np.uint16)
-        write_image_omezarr(img, str(out), axes="cyx", max_levels=3)
+        write_image_omezarr(
+            img,
+            str(out),
+            axes="cyx",
+            max_levels=3,
+            compression="blosc-zstd-bitshuffle",
+        )
         root = zarr.open_group(str(out), mode="r")
         for i in range(3):
             blosc = [c for c in self._codecs(root[str(i)]) if c["name"] == "blosc"]
@@ -592,22 +598,56 @@ class TestCompressionAndPyramid:
             assert cfg["cname"] == "zstd"
             assert cfg["shuffle"] == "bitshuffle"
 
-    def test_compression_roundtrip_bit_equal(self, tmp_path):
-        """Blosc(zstd) is lossless: written == read, bit for bit."""
-        out = tmp_path / "rt.zarr"
-        img = np.random.randint(0, 2**16 - 1, (3, 128, 128), dtype=np.uint16)
-        write_image_omezarr(img, str(out), axes="cyx", max_levels=2)
-        np.testing.assert_array_equal(
-            img, zarr.open_group(str(out), mode="r")["0"][:]
-        )
+    @pytest.mark.parametrize(
+        "spec,cname,shuffle,clevel",
+        [
+            ("blosc-zstd-bitshuffle", "zstd", "bitshuffle", 5),
+            ("blosc-lz4-shuffle", "lz4", "shuffle", 5),
+            ("blosc-zstd", "zstd", "bitshuffle", 5),  # shuffle defaults
+            ("blosc-blosclz-noshuffle", "blosclz", "noshuffle", 5),
+            ("blosc-zstd-bitshuffle:9", "zstd", "bitshuffle", 9),  # clevel override
+        ],
+    )
+    def test_compression_spec_varies_codec(
+        self, tmp_path, spec, cname, shuffle, clevel
+    ):
+        """Codec, shuffle, and level are all selectable from the config string."""
+        out = tmp_path / f"{spec.replace(':', '_')}.zarr"
+        img = np.random.randint(0, 4000, (1, 64, 64), dtype=np.uint16)
+        write_image_omezarr(img, str(out), axes="cyx", max_levels=1, compression=spec)
+        arr = zarr.open_group(str(out), mode="r")["0"]
+        cfg = [c for c in self._codecs(arr) if c["name"] == "blosc"][0]["configuration"]
+        assert (cfg["cname"], cfg["shuffle"], cfg["clevel"]) == (cname, shuffle, clevel)
+        # every Blosc cname is lossless
+        np.testing.assert_array_equal(img, arr[:])
+
+    @pytest.mark.parametrize("spec", ["gzip", "blosc", "blosc-zstd-sideways", "lz4"])
+    def test_unknown_compression_spec_raises(self, tmp_path, spec):
+        """A malformed codec spec fails loudly instead of silently writing raw."""
+        img = np.random.randint(0, 4000, (1, 32, 32), dtype=np.uint16)
+        with pytest.raises(ValueError):
+            write_image_omezarr(
+                img, str(tmp_path / "bad.zarr"), axes="cyx", compression=spec
+            )
+
+    def test_compression_off_by_default(self, tmp_path):
+        """Writer default is uncompressed: callers opt in, so shared callers
+        (tile writers, hcs finalize) keep their pre-existing behavior."""
+        out = tmp_path / "default.zarr"
+        img = np.random.randint(0, 4000, (1, 64, 64), dtype=np.uint16)
+        write_image_omezarr(img, str(out), axes="cyx")
+        root = zarr.open_group(str(out), mode="r")
+        assert not any(c["name"] == "blosc" for c in self._codecs(root["0"]))
+        # ...and single-level, for the same reason
+        assert [d["path"] for d in root.attrs["ome"]["multiscales"][0]["datasets"]] == [
+            "0"
+        ]
 
     def test_compression_can_be_disabled(self, tmp_path):
         """compression='none' falls back to zarr's default (no Blosc)."""
         out = tmp_path / "raw.zarr"
         img = np.random.randint(0, 4000, (1, 64, 64), dtype=np.uint16)
-        write_image_omezarr(
-            img, str(out), axes="cyx", max_levels=1, compression="none"
-        )
+        write_image_omezarr(img, str(out), axes="cyx", max_levels=1, compression="none")
         codecs = zarr.open_group(str(out), mode="r")["0"].metadata.to_dict()["codecs"]
         assert not any(c["name"] == "blosc" for c in codecs)
 

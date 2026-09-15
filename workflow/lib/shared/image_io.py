@@ -36,9 +36,11 @@ DEFAULT_CHANNEL_COLORS = [
 
 PathLike = Union[str, Path]
 
-# OME-Zarr pyramid depth + compression defaults (issues #27/#28), both ON.
-# Override via config.yml (all.zarr_max_levels / all.zarr_compression) or the
-# save_image/write_image_omezarr kwargs.
+# Pyramid depth + compression applied by the *preprocess convert* path when
+# config.yml omits all.zarr_max_levels / all.zarr_compression (issues #27/#28).
+# These are call-site defaults, NOT writer defaults: save_image and
+# write_image_omezarr stay single-level and uncompressed unless asked, so the
+# other ~30 save_image callers keep their existing behavior.
 DEFAULT_MAX_LEVELS = 5
 DEFAULT_ZARR_COMPRESSION = "blosc-zstd-bitshuffle"
 DEFAULT_BLOSC_CLEVEL = 5
@@ -48,23 +50,50 @@ DEFAULT_BLOSC_CLEVEL = 5
 _BLOSC_NTHREADS = int(os.environ.get("BRIEFLOW_BLOSC_NTHREADS", "4"))
 numcodecs.blosc.set_nthreads(_BLOSC_NTHREADS)
 
+_BLOSC_SHUFFLE = {
+    "noshuffle": BloscShuffle.noshuffle,
+    "shuffle": BloscShuffle.shuffle,
+    "bitshuffle": BloscShuffle.bitshuffle,
+}
 
-def _make_compressor(compression: Optional[str], clevel: int = DEFAULT_BLOSC_CLEVEL):
-    """Build a zarr-v3 bytes-to-bytes codec from a short config string.
 
-    Returns None (zarr's default codec) when compression is disabled. Blosc(zstd)
-    is lossless, so a written/read roundtrip is bit-identical.
+def _make_compressor(compression: Optional[str]):
+    """Build a zarr-v3 Blosc codec from a ``blosc-<cname>[-<shuffle>][:<clevel>]`` string.
+
+    Any cname and shuffle c-blosc supports can be selected from config without
+    editing this module, e.g. ``blosc-zstd-bitshuffle`` (the preprocess default),
+    ``blosc-lz4-shuffle`` for speed over ratio, or ``blosc-zstd-bitshuffle:9`` to
+    override the compression level. ``shuffle`` defaults to ``bitshuffle`` and
+    ``clevel`` to ``DEFAULT_BLOSC_CLEVEL``.
+
+    Returns None — zarr's default codec — for ``None`` or ``"none"``. Blosc is
+    lossless for every cname, so a write/read roundtrip is always bit-identical.
     """
     if compression is None:
         return None
     key = str(compression).strip().lower()
-    if key in ("", "none", "raw", "off"):
+    if key in ("", "none"):
         return None
-    if key in ("blosc-zstd-bitshuffle", "blosc", "bitshuffle", "default"):
-        return BloscCodec(cname="zstd", clevel=clevel, shuffle=BloscShuffle.bitshuffle)
-    if key in ("blosc-zstd", "blosc-zstd-shuffle", "shuffle"):
-        return BloscCodec(cname="zstd", clevel=clevel, shuffle=BloscShuffle.shuffle)
-    raise ValueError(f"Unknown zarr compression: {compression!r}")
+
+    spec, _, clevel = key.partition(":")
+    parts = spec.split("-")
+    if parts[0] != "blosc" or not 2 <= len(parts) <= 3:
+        raise ValueError(
+            f"Unknown zarr compression {compression!r}; expected 'none' or "
+            "'blosc-<cname>[-<shuffle>][:<clevel>]'"
+        )
+    shuffle = parts[2] if len(parts) == 3 else "bitshuffle"
+    if shuffle not in _BLOSC_SHUFFLE:
+        raise ValueError(
+            f"Unknown blosc shuffle {shuffle!r} in {compression!r}; "
+            f"expected one of {sorted(_BLOSC_SHUFFLE)}"
+        )
+    # BloscCodec rejects an unknown cname itself, so no cname table to maintain.
+    return BloscCodec(
+        cname=parts[1],
+        clevel=int(clevel) if clevel else DEFAULT_BLOSC_CLEVEL,
+        shuffle=_BLOSC_SHUFFLE[shuffle],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +155,16 @@ def save_image(
     pixel_size: Optional[Union[float, Tuple[float, ...]]] = None,
     channel_names: Optional[Sequence[str]] = None,
     coarsening_factor: int = 2,
-    max_levels: int = DEFAULT_MAX_LEVELS,
+    max_levels: int = 1,
     is_label: bool = False,
-    compression: Optional[str] = DEFAULT_ZARR_COMPRESSION,
+    compression: Optional[str] = None,
 ) -> None:
-    """Save an image to TIFF or OME-Zarr depending on the output path suffix."""
+    """Save an image to TIFF or OME-Zarr depending on the output path suffix.
+
+    Pyramids and compression are opt-in: pass ``max_levels`` / ``compression``
+    (see :func:`_make_compressor` for the accepted strings). The preprocess
+    convert path threads ``all.zarr_max_levels`` / ``all.zarr_compression`` in.
+    """
     out = Path(output_path)
     suffix = out.suffix.lower()
 
@@ -203,11 +237,10 @@ def write_image_omezarr(
     axes: str = "TCZYX",
     pixel_size_um: Optional[Union[float, Tuple[float, ...], Dict[str, float]]] = None,
     coarsening_factor: int = 2,
-    max_levels: int = DEFAULT_MAX_LEVELS,
+    max_levels: int = 1,
     is_label: bool = False,
     chunk_size: Optional[Tuple[int, ...]] = None,
-    storage_options: Optional[Dict[str, Any]] = None,
-    compression: Optional[str] = DEFAULT_ZARR_COMPRESSION,
+    compression: Optional[str] = None,
 ) -> None:
     """Write an image array to OME-Zarr format with pyramids.
 
@@ -221,10 +254,11 @@ def write_image_omezarr(
             - tuple: (y, x) or (z, y, x) depending on available axes
             - dict: keys from {"x","y","z"} (values can be None)
         coarsening_factor: Factor by which to downscale the image.
-        max_levels: Maximum number of pyramid levels to generate.
+        max_levels: Number of pyramid levels to generate (1 = no downsampling).
         is_label: Whether the image is a label image.
         chunk_size: Tuple for chunking (optional).
-        storage_options: Options for storage backend (optional).
+        compression: Codec spec, ``blosc-<cname>[-<shuffle>][:<clevel>]`` or
+            ``"none"``/None for zarr's default. See :func:`_make_compressor`.
     """
     # Normalize axis names to uppercase (OPS schema convention).
     axes = axes.upper()
@@ -305,15 +339,7 @@ def write_image_omezarr(
     axes_dicts = _axes_str_to_dicts(axes)
     dimension_names = [a["name"] for a in axes_dicts]
 
-    # Codec + chunks may arrive via storage_options (the documented hook) or,
-    # for the codec, via the ``compression`` string; storage_options wins.
-    storage_options = dict(storage_options or {})
-    compressor = storage_options.pop("compressor", None)
-    if compressor is None:
-        compressor = _make_compressor(compression)
-    chunk_override = storage_options.pop("chunks", None)
-    if chunk_override is not None:
-        chunk_size = chunk_override
+    compressor = _make_compressor(compression)
     if chunk_size is None:
         chunk_size = tuple(c[0] for c in image_data.chunks)
 
