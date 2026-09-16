@@ -216,9 +216,7 @@ def _worker_init_gpu(num_gpus, omp_threads=4):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(os.getpid() % num_gpus)
 
 
-def run_parallel(
-    tasks, fn, workers, label, initializer=None, initargs=(), proc_gpu=False
-):
+def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -227,7 +225,7 @@ def run_parallel(
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
     with (
-        monitor_step(label, n_workers=workers, proc_gpu=proc_gpu),
+        monitor_step(label, n_workers=workers),
         ProcessPoolExecutor(
             max_workers=workers, initializer=initializer, initargs=initargs
         ) as pool,
@@ -760,7 +758,6 @@ def process_sbs(config, args):
         "Segment SBS",
         initializer=seg_init[0],
         initargs=seg_init[1],
-        proc_gpu=True,
     )
 
     # --- Step 8: Extract bases ---
