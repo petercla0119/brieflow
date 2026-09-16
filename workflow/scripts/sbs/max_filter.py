@@ -12,4 +12,6 @@ max_filtered = max_filter(
 )
 
 # Save the max filtered data
-save_image(max_filtered, snakemake.output[0], channel_names=snakemake.params.channel_names)
+save_image(
+    max_filtered, snakemake.output[0], channel_names=snakemake.params.channel_names
+)
