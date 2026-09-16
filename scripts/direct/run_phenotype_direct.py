@@ -49,7 +49,11 @@ from lib.shared.image_io import read_image, save_image
 from lib.shared.illumination_correction import apply_ic_field
 from lib.shared.parquet_io import write_parquet, read_parquets
 from lib.shared.rule_utils import get_alignment_params, get_segmentation_params
-from lib.shared.resource_monitor import monitor_step, set_benchmark_context
+from lib.shared.resource_monitor import (
+    monitor_step,
+    set_benchmark_context,
+    plates_from_combos,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1044,7 +1048,10 @@ def main():
 
     config = yaml.safe_load(open(args.config))
     set_benchmark_context(
-        "phenotype", config["all"]["root_fp"], plate=args.plate_filter
+        "phenotype",
+        config["all"]["root_fp"],
+        plate=args.plate_filter
+        or plates_from_combos(config.get("preprocess", {}).get("phenotype_combo_fp")),
     )
     if args.gpu:
         config.setdefault("phenotype", {})["gpu"] = True
