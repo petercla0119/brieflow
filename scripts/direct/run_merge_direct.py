@@ -31,7 +31,11 @@ sys.path.insert(0, str(_WORKFLOW / "lib"))
 sys.path.insert(0, str(_WORKFLOW))
 
 from lib.shared.file_utils import validate_dtypes  # noqa: E402
-from lib.shared.resource_monitor import monitor_step, set_benchmark_context  # noqa: E402
+from lib.shared.resource_monitor import (
+    monitor_step,
+    set_benchmark_context,
+    plates_from_combos,
+)  # noqa: E402
 from lib.shared.parquet_io import read_parquet, write_parquet  # noqa: E402
 from lib.merge.hash import (  # noqa: E402
     hash_cell_locations,
@@ -464,7 +468,11 @@ def main():
             f"run_merge_direct only implements the fast chain; config approach={cfg.get('approach')}"
         )
     out_root = Path(config["all"]["root_fp"])
-    set_benchmark_context("merge", out_root, plate=args.plate_filter)
+    set_benchmark_context(
+        "merge",
+        out_root,
+        plate=args.plate_filter or plates_from_combos(cfg.get("merge_combo_fp")),
+    )
 
     combo_fp = cfg.get("merge_combo_fp", "config/merge_combo.tsv")
     combos = pd.read_csv(combo_fp, sep="\t")
