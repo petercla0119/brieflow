@@ -33,6 +33,7 @@ module-global lock across the pool submit, and each worker tries to acquire it.
 Run: pytest tests/direct/test_phenotype_direct_deadlock.py
  or: python tests/direct/test_phenotype_direct_deadlock.py
 """
+
 import multiprocessing
 import os
 import queue as _queue
@@ -57,16 +58,34 @@ def _stub(name, **attrs):
 # mutation.
 _stub("lib")
 _stub("lib.shared")
-_stub("lib.shared.file_utils", get_data_output_path=lambda *a, **k: "",
-      get_image_output_path=lambda *a, **k: "", validate_dtypes=lambda df: df)
-_stub("lib.shared.image_io", read_image=lambda *a, **k: None, save_image=lambda *a, **k: None)
+_stub(
+    "lib.shared.file_utils",
+    get_data_output_path=lambda *a, **k: "",
+    get_image_output_path=lambda *a, **k: "",
+    validate_dtypes=lambda df: df,
+)
+_stub(
+    "lib.shared.image_io",
+    read_image=lambda *a, **k: None,
+    save_image=lambda *a, **k: None,
+)
 _stub("lib.shared.illumination_correction", apply_ic_field=lambda *a, **k: None)
-_stub("lib.shared.parquet_io", write_parquet=lambda df, p: df.to_parquet(p),
-      read_parquets=lambda *a, **k: None)
-_stub("lib.shared.rule_utils", get_alignment_params=lambda *a, **k: {},
-      get_segmentation_params=lambda *a, **k: {})
+_stub(
+    "lib.shared.parquet_io",
+    write_parquet=lambda df, p: df.to_parquet(p),
+    read_parquets=lambda *a, **k: None,
+)
+_stub(
+    "lib.shared.rule_utils",
+    get_alignment_params=lambda *a, **k: {},
+    get_segmentation_params=lambda *a, **k: {},
+)
 
-_stub("lib.shared.resource_monitor", monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(), set_benchmark_context=lambda *a, **k: None)  # ponytail: nullcontext stub; real context manager is only needed when the step actually runs
+_stub(
+    "lib.shared.resource_monitor",
+    monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(),
+    set_benchmark_context=lambda *a, **k: None,
+)  # ponytail: nullcontext stub; real context manager is only needed when the step actually runs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
 import run_phenotype_direct as rpd  # noqa: E402
@@ -131,12 +150,12 @@ def _threaded_parent_body(result_q):
     def _holder():
         _GLOBAL_LOCK.acquire()
         holder_ready.set()
-        release.wait()          # keep the lock held across the pool submit
+        release.wait()  # keep the lock held across the pool submit
         _GLOBAL_LOCK.release()
 
     t = threading.Thread(target=_holder, daemon=True)
     t.start()
-    holder_ready.wait()         # lock is now definitely held by the bg thread
+    holder_ready.wait()  # lock is now definitely held by the bg thread
     try:
         errs = rpd.run_parallel(
             tasks=[0, 1, 2, 3],
@@ -171,7 +190,9 @@ def _run_with_watchdog(target, timeout=45):
         status, errs = q.get(timeout=5)
     except _queue.Empty:
         raise AssertionError("watchdog child produced no result")
-    assert status == "done" and errs == 0, f"repro reported failure: {status} errs={errs}"
+    assert status == "done" and errs == 0, (
+        f"repro reported failure: {status} errs={errs}"
+    )
 
 
 def test_run_parallel_survives_fork_after_threading():

@@ -14,6 +14,7 @@ brieflow installed editable, which would mask the bug at import time).
 
 Run: pytest tests/direct/test_direct_runner_syspath.py
 """
+
 import ast
 import types
 from pathlib import Path
@@ -96,8 +97,10 @@ def test_preprocess_target_module_present():
     paths = _inserted_paths(_DIRECT_DIR / "run_preprocess_direct.py")
     mod = None
     for base in paths:
-        for cand in (base / "lib" / "preprocess" / "preprocess.py",
-                     base / "preprocess" / "preprocess.py"):
+        for cand in (
+            base / "lib" / "preprocess" / "preprocess.py",
+            base / "preprocess" / "preprocess.py",
+        ):
             if cand.is_file():
                 mod = cand
                 break

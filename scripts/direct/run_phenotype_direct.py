@@ -23,7 +23,12 @@ from types import SimpleNamespace
 # oversubscribe (each worker stays single-threaded). Restores the cap that was dropped when
 # this GPU/--step runner was split out of the extract-only runner. GPU segment workers
 # re-raise OMP via _worker_init_gpu. See CLAUDE.md OpenBLAS/MKL thread rule.
-for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+for _v in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
     os.environ.setdefault(_v, "1")
 
 import numpy as np
@@ -35,7 +40,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # (the nested path was correct only for the optimize-pheno-tdp worktree layout).
 sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 
-from lib.shared.file_utils import get_data_output_path, get_image_output_path, validate_dtypes
+from lib.shared.file_utils import (
+    get_data_output_path,
+    get_image_output_path,
+    validate_dtypes,
+)
 from lib.shared.image_io import read_image, save_image
 from lib.shared.illumination_correction import apply_ic_field
 from lib.shared.parquet_io import write_parquet, read_parquets
@@ -46,6 +55,7 @@ from lib.shared.resource_monitor import monitor_step, set_benchmark_context
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
+
 
 def make_loc(img_fmt, plate, well=None, tile=None):
     loc = {"plate": str(plate)}
@@ -72,8 +82,11 @@ def out_exists(path):
 
 
 def atomic_write_parquet(df, path):
-    """Write to a sibling .tmp then os.replace — atomic on same fs, so a crash
-    mid-write never leaves a size>0 partial that the out_exists() skip guard trusts."""
+    """Write a parquet atomically, via a sibling .tmp plus os.replace.
+
+    Atomic on the same filesystem, so a crash mid-write never leaves a size>0
+    partial that the out_exists() skip guard would trust.
+    """
     path = str(path)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
@@ -83,7 +96,9 @@ def atomic_write_parquet(df, path):
 
 def phen_img_path(phen_fp, fmt, plate, well, tile, info_type, subdirectory=None):
     loc = make_loc(fmt, plate, well, tile)
-    return str(phen_fp / get_image_output_path(loc, info_type, fmt, subdirectory=subdirectory))
+    return str(
+        phen_fp / get_image_output_path(loc, info_type, fmt, subdirectory=subdirectory)
+    )
 
 
 def phen_data_path(phen_fp, fmt, plate, well, tile, info_type, ext):
@@ -98,17 +113,26 @@ def phen_well_path(phen_fp, fmt, plate, well, info_type, ext):
 
 def phen_plate_path(phen_fp, fmt, plate, info_type, ext, subdir):
     loc = make_loc(fmt, plate)
-    return str(phen_fp / "eval" / subdir / get_data_output_path(loc, info_type, ext, fmt))
+    return str(
+        phen_fp / "eval" / subdir / get_data_output_path(loc, info_type, ext, fmt)
+    )
 
 
 def preprocess_phen_img_path(pp_fp, fmt, plate, well, tile):
     loc = make_loc(fmt, plate, well, tile)
-    return str(pp_fp / get_image_output_path(loc, "image", fmt, image_subdir="phenotype"))
+    return str(
+        pp_fp / get_image_output_path(loc, "image", fmt, image_subdir="phenotype")
+    )
 
 
 def preprocess_phen_ic_path(pp_fp, fmt, plate, well):
     loc = make_loc(fmt, plate, well)
-    return str(pp_fp / "ic_fields" / "phenotype" / get_data_output_path(loc, "ic_field", fmt, fmt))
+    return str(
+        pp_fp
+        / "ic_fields"
+        / "phenotype"
+        / get_data_output_path(loc, "ic_field", fmt, fmt)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +147,9 @@ def preprocess_phen_ic_path(pp_fp, fmt, plate, well):
 _MP = multiprocessing.get_context("spawn")
 
 
-def run_parallel(tasks, fn, workers, label, initializer=None, initargs=(), proc_gpu=False):
+def run_parallel(
+    tasks, fn, workers, label, initializer=None, initargs=(), proc_gpu=False
+):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -131,7 +157,15 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=(), proc_
     ok = skip = err = 0
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
-    with monitor_step(label, n_workers=workers, proc_gpu=proc_gpu), ProcessPoolExecutor(max_workers=workers, mp_context=_MP, initializer=initializer, initargs=initargs) as pool:
+    with (
+        monitor_step(label, n_workers=workers, proc_gpu=proc_gpu),
+        ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=_MP,
+            initializer=initializer,
+            initargs=initargs,
+        ) as pool,
+    ):
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -144,7 +178,9 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=(), proc_
                 print(f"    ERR: {msg}")
             total = ok + skip + err
             if total == n or total % max(1, n // 20) == 0:
-                print(f"    [{total}/{n}] {time.time() - t0:.0f}s  new={ok} skip={skip} err={err}")
+                print(
+                    f"    [{total}/{n}] {time.time() - t0:.0f}s  new={ok} skip={skip} err={err}"
+                )
     print(f"  {label}: done in {time.time() - t0:.1f}s")
     return err
 
@@ -153,11 +189,15 @@ def run_parallel(tasks, fn, workers, label, initializer=None, initargs=(), proc_
 # GPU worker initializer
 # ---------------------------------------------------------------------------
 
+
 def _worker_init_gpu(num_gpus, counter, lock, omp_threads=4):
-    """Worker initializer for GPU steps. Pins each worker to a distinct GPU via an
-    atomic round-robin counter (spawn-safe Manager proxy): N workers map to GPUs
-    0..N-1. Replaces the old os.getpid() % num_gpus hash, which collided and left
-    GPUs idle (2026-08-27: 4 workers -> GPUs {0,2,3,3}, GPU 1 unused)."""
+    """Pin each GPU-step worker to a distinct GPU.
+
+    Uses an atomic round-robin counter (spawn-safe Manager proxy), so N workers
+    map to GPUs 0..N-1. Replaces the old os.getpid() % num_gpus hash, which
+    collided and left GPUs idle (2026-08-27: 4 workers -> GPUs {0,2,3,3}, GPU 1
+    unused).
+    """
     os.environ["OMP_NUM_THREADS"] = str(omp_threads)
     with lock:
         idx = counter.value
@@ -169,14 +209,20 @@ def _worker_init_gpu(num_gpus, counter, lock, omp_threads=4):
 # Per-tile workers
 # ---------------------------------------------------------------------------
 
+
 def _align_array(data, align_cfg):
-    """Channel alignment transform (custom offsets + phenotype FFT alignment). Pure
-    in-memory; no I/O. Shared by the fused pre-seg worker."""
+    """Apply the channel alignment transform to an in-memory array.
+
+    Custom offsets plus phenotype FFT alignment. Pure in-memory, no I/O. Shared
+    by the fused pre-seg worker.
+    """
     from lib.phenotype.align_channels import align_phenotype_channels
     from lib.shared.align import apply_custom_offsets
 
     if align_cfg.get("custom_channel_offsets"):
-        data = apply_custom_offsets(data, offsets_dict=align_cfg["custom_channel_offsets"])
+        data = apply_custom_offsets(
+            data, offsets_dict=align_cfg["custom_channel_offsets"]
+        )
 
     if align_cfg.get("align", False):
         if align_cfg.get("multi_step", False):
@@ -187,7 +233,9 @@ def _align_array(data, align_cfg):
                     source=step["source"],
                     riders=step.get("riders", []),
                     remove_channel=step["remove_channel"],
-                    upsample_factor=step.get("upsample_factor", align_cfg.get("upsample_factor", 2)),
+                    upsample_factor=step.get(
+                        "upsample_factor", align_cfg.get("upsample_factor", 2)
+                    ),
                     window=step.get("window", align_cfg.get("window", 2)),
                 )
         else:
@@ -246,6 +294,7 @@ def _segment_one(task):
 
         if method == "cellpose":
             from lib.shared.segment_cellpose import segment_cellpose
+
             result = segment_cellpose(
                 data=data,
                 dapi_index=seg_params["dapi_index"],
@@ -269,6 +318,7 @@ def _segment_one(task):
             )
         elif method == "watershed":
             from lib.shared.segment_watershed import segment_watershed
+
             result = segment_watershed(
                 data=data,
                 nuclei_threshold=seg_params["threshold_dapi"],
@@ -306,7 +356,10 @@ def _identify_cytoplasm_one(task):
         nuclei = read_image(nuclei_path)
         cells = read_image(cells_path)
         if segment_cells:
-            from lib.phenotype.identify_cytoplasm_cellpose import identify_cytoplasm_cellpose
+            from lib.phenotype.identify_cytoplasm_cellpose import (
+                identify_cytoplasm_cellpose,
+            )
+
             cytoplasms = identify_cytoplasm_cellpose(nuclei, cells)
             if cytoplasms is None:
                 cytoplasms = np.zeros_like(nuclei, dtype=np.int32)
@@ -326,8 +379,11 @@ def _extract_phenotype_info_one(task):
     try:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         from lib.shared.extract_phenotype_minimal import extract_phenotype_minimal
+
         nuclei = read_image(nuclei_path)
-        df = extract_phenotype_minimal(phenotype_data=nuclei, nuclei_data=nuclei, wildcards=wc)
+        df = extract_phenotype_minimal(
+            phenotype_data=nuclei, nuclei_data=nuclei, wildcards=wc
+        )
         df.to_csv(output_path, index=False, sep="\t")
         return "ok", tag
     except Exception as e:
@@ -355,17 +411,30 @@ def _extract_phenotype_one(task):
         wc = params["wildcards"]
 
         if cp_method == "cp_measure":
-            from lib.phenotype.extract_phenotype_cp_measure import extract_phenotype_cp_measure
+            from lib.phenotype.extract_phenotype_cp_measure import (
+                extract_phenotype_cp_measure,
+            )
+
             phenotype_cp = extract_phenotype_cp_measure(
-                data_phenotype=data, nuclei=nuclei, cells=cells_data,
-                cytoplasms=cytoplasms, channel_names=params["channel_names"],
+                data_phenotype=data,
+                nuclei=nuclei,
+                cells=cells_data,
+                cytoplasms=cytoplasms,
+                channel_names=params["channel_names"],
             )
         elif cp_method == "cp_emulator":
-            from lib.phenotype.extract_phenotype_cp_emulator import extract_phenotype_cp_emulator
+            from lib.phenotype.extract_phenotype_cp_emulator import (
+                extract_phenotype_cp_emulator,
+            )
+
             phenotype_cp = extract_phenotype_cp_emulator(
-                data_phenotype=data, nuclei=nuclei, cells=cells_data,
-                cytoplasms=cytoplasms, foci_channel=params.get("foci_channel_index"),
-                channel_names=params["channel_names"], wildcards=wc,
+                data_phenotype=data,
+                nuclei=nuclei,
+                cells=cells_data,
+                cytoplasms=cytoplasms,
+                foci_channel=params.get("foci_channel_index"),
+                channel_names=params["channel_names"],
+                wildcards=wc,
             )
         else:
             raise ValueError(f"Unknown cp_method: {cp_method}")
@@ -395,10 +464,12 @@ def _available_gb():
 
 
 def _merge_worker_cap(requested):
-    """merge holds a full well in RAM (WELL_PEAK_GB); size concurrency by memory,
-    not cores. Two OOMs set this: 6 parallel wells killed a 173 GB box (2026-08-08),
-    and plate 9 hit 133 GB in a single well (2026-09-10), which raised the estimate
-    from 70 to 135 GB."""
+    """Cap merge concurrency by available memory rather than by core count.
+
+    Merge holds a full well in RAM (WELL_PEAK_GB). Two OOMs set this: 6 parallel
+    wells killed a 173 GB box (2026-08-08), and plate 9 hit 133 GB in a single
+    well (2026-09-10), which raised the estimate from 70 to 135 GB.
+    """
     avail = _available_gb()
     mem_cap = max(1, int(avail // WELL_PEAK_GB)) if avail else 2
     return max(1, min(requested, mem_cap))
@@ -445,10 +516,14 @@ def _merge_well_one(task):
 # Main processing
 # ---------------------------------------------------------------------------
 
+
 def _verify_aligned_complete(tile_combos, phen_fp, fmt):
-    """Return [(plate, well, tile), ...] whose 'aligned' output is missing. Guards the
-    CPU->GPU handoff: segmentation reads 'aligned', so a partial pre-seg would silently
-    under-segment. Resumable out_exists() skips don't assert completeness -- this does."""
+    """Return [(plate, well, tile), ...] whose 'aligned' output is missing.
+
+    Guards the CPU->GPU handoff: segmentation reads 'aligned', so a partial
+    pre-seg would silently under-segment. Resumable out_exists() skips do not
+    assert completeness -- this does.
+    """
     missing = []
     for _, r in tile_combos.iterrows():
         p, we, ti = r["plate"], r["well"], r["tile"]
@@ -471,8 +546,10 @@ def process_phenotype(config, args):
     if args.plate_filter:
         combos = combos[combos["plate"] == str(args.plate_filter)]
 
-    if (getattr(args, "tile_start", None) is not None
-            or getattr(args, "tile_end", None) is not None) and "tile" in combos.columns:
+    if (
+        getattr(args, "tile_start", None) is not None
+        or getattr(args, "tile_end", None) is not None
+    ) and "tile" in combos.columns:
         tiles = sorted(combos["tile"].unique(), key=lambda x: int(x))
         start = args.tile_start or 0
         end = args.tile_end if args.tile_end is not None else len(tiles)
@@ -527,7 +604,11 @@ def process_phenotype(config, args):
         raw = preprocess_phen_img_path(pp_fp, fmt, p, we, ti)
         ic = preprocess_phen_ic_path(pp_fp, fmt, p, we)
         out = phen_img_path(phen_fp, fmt, p, we, ti, "aligned")
-        ic_out = phen_img_path(phen_fp, fmt, p, we, ti, "illumination_corrected") if save_ic else None
+        ic_out = (
+            phen_img_path(phen_fp, fmt, p, we, ti, "illumination_corrected")
+            if save_ic
+            else None
+        )
         tasks.append((raw, ic, out, align_cfgs[p], ic_out))
     errs += run_parallel(tasks, _preseg_one, w, "Apply IC + Align (fused)")
 
@@ -537,12 +618,16 @@ def process_phenotype(config, args):
     if len(pre_seg_tc) and not getattr(args, "allow_partial", False):
         missing = _verify_aligned_complete(pre_seg_tc, phen_fp, fmt)
         if missing:
-            print(f"\n  INCOMPLETE PRE-SEG: {len(missing)}/{len(pre_seg_tc)} tiles missing 'aligned'")
+            print(
+                f"\n  INCOMPLETE PRE-SEG: {len(missing)}/{len(pre_seg_tc)} tiles missing 'aligned'"
+            )
             for mp, mw, mt in missing[:20]:
                 print(f"    MISSING aligned P{mp}/W{mw}/T{mt}")
             if len(missing) > 20:
                 print(f"    ... and {len(missing) - 20} more")
-            print("  Aborting before handoff. Re-run pre-seg to fill gaps, or pass --allow-partial.")
+            print(
+                "  Aborting before handoff. Re-run pre-seg to fill gaps, or pass --allow-partial."
+            )
             return errs + len(missing)
         print(f"  Pre-seg complete: all {len(pre_seg_tc)} 'aligned' tiles present.")
 
@@ -552,21 +637,28 @@ def process_phenotype(config, args):
     if len(segment_tc) and not getattr(args, "allow_partial", False):
         missing = _verify_aligned_complete(segment_tc, phen_fp, fmt)
         if missing:
-            print(f"\n  CANNOT SEGMENT: {len(missing)}/{len(segment_tc)} 'aligned' inputs missing")
+            print(
+                f"\n  CANNOT SEGMENT: {len(missing)}/{len(segment_tc)} 'aligned' inputs missing"
+            )
             for mp, mw, mt in missing[:20]:
                 print(f"    MISSING aligned P{mp}/W{mw}/T{mt}")
             if len(missing) > 20:
                 print(f"    ... and {len(missing) - 20} more")
-            print("  Aborting before GPU work. Finish pre-seg / re-attach the disk, or pass --allow-partial.")
+            print(
+                "  Aborting before GPU work. Finish pre-seg / re-attach the disk, or pass --allow-partial."
+            )
             return errs + len(missing)
 
     seg_gpus = args.seg_gpus
     if args.gpu and seg_gpus > 1:
         try:
             import torch
+
             actual = torch.cuda.device_count()
             if actual < seg_gpus:
-                print(f"  WARN: --seg-gpus {seg_gpus} but only {actual} GPU(s) detected, clamping")
+                print(
+                    f"  WARN: --seg-gpus {seg_gpus} but only {actual} GPU(s) detected, clamping"
+                )
                 seg_gpus = max(1, actual)
         except Exception:
             pass
@@ -578,7 +670,10 @@ def process_phenotype(config, args):
         seg_workers = min(w, 16)
     if args.gpu and seg_gpus > 1:
         _gpu_mgr = _MP.Manager()
-        seg_init = (_worker_init_gpu, (seg_gpus, _gpu_mgr.Value("i", 0), _gpu_mgr.Lock()))
+        seg_init = (
+            _worker_init_gpu,
+            (seg_gpus, _gpu_mgr.Value("i", 0), _gpu_mgr.Lock()),
+        )
     else:
         seg_init = (None, ())
     tasks = []
@@ -589,8 +684,15 @@ def process_phenotype(config, args):
         c_out = phen_img_path(phen_fp, fmt, p, we, ti, "cells", subdirectory="labels")
         s_out = phen_data_path(phen_fp, fmt, p, we, ti, "segmentation_stats", "tsv")
         tasks.append((inp, n_out, c_out, s_out, seg_params))
-    errs += run_parallel(tasks, _segment_one, seg_workers, "Segment phenotype",
-                         initializer=seg_init[0], initargs=seg_init[1], proc_gpu=True)
+    errs += run_parallel(
+        tasks,
+        _segment_one,
+        seg_workers,
+        "Segment phenotype",
+        initializer=seg_init[0],
+        initargs=seg_init[1],
+        proc_gpu=True,
+    )
 
     # --- Step 4: Identify cytoplasm ---
     tasks = []
@@ -598,7 +700,9 @@ def process_phenotype(config, args):
         p, we, ti = r["plate"], r["well"], r["tile"]
         n_in = phen_img_path(phen_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
         c_in = phen_img_path(phen_fp, fmt, p, we, ti, "cells", subdirectory="labels")
-        out = phen_img_path(phen_fp, fmt, p, we, ti, "identified_cytoplasms", subdirectory="labels")
+        out = phen_img_path(
+            phen_fp, fmt, p, we, ti, "identified_cytoplasms", subdirectory="labels"
+        )
         tasks.append((n_in, c_in, out, segment_cells))
     errs += run_parallel(tasks, _identify_cytoplasm_one, w, "Identify cytoplasm")
 
@@ -610,7 +714,9 @@ def process_phenotype(config, args):
         out = phen_data_path(phen_fp, fmt, p, we, ti, "phenotype_info", "tsv")
         wc = {"plate": p, "well": we, "tile": ti}
         tasks.append((n_in, out, wc))
-    errs += run_parallel(tasks, _extract_phenotype_info_one, w, "Extract phenotype info")
+    errs += run_parallel(
+        tasks, _extract_phenotype_info_one, w, "Extract phenotype info"
+    )
 
     # --- Step 6: Extract phenotype (full features) ---
     tasks = []
@@ -619,7 +725,9 @@ def process_phenotype(config, args):
         aligned = phen_img_path(phen_fp, fmt, p, we, ti, "aligned")
         nuclei = phen_img_path(phen_fp, fmt, p, we, ti, "nuclei", subdirectory="labels")
         cells_p = phen_img_path(phen_fp, fmt, p, we, ti, "cells", subdirectory="labels")
-        cyto = phen_img_path(phen_fp, fmt, p, we, ti, "identified_cytoplasms", subdirectory="labels")
+        cyto = phen_img_path(
+            phen_fp, fmt, p, we, ti, "identified_cytoplasms", subdirectory="labels"
+        )
         out = phen_data_path(phen_fp, fmt, p, we, ti, "phenotype_cp", "parquet")
         params = {
             "cp_method": cp_method,
@@ -630,7 +738,9 @@ def process_phenotype(config, args):
         }
         tasks.append((aligned, nuclei, cells_p, cyto, out, params))
     extract_workers = args.extract_workers if args.extract_workers else min(w, 96)
-    errs += run_parallel(tasks, _extract_phenotype_one, extract_workers, "Extract phenotype")
+    errs += run_parallel(
+        tasks, _extract_phenotype_one, extract_workers, "Extract phenotype"
+    )
 
     # --- Step 7: Combine phenotype info (per well) ---
     # ponytail shim #3: gate combine/eval (steps 7-10) to post-seg so `--step segment` (GPU box)
@@ -644,7 +754,9 @@ def process_phenotype(config, args):
                 continue
 
             input_paths = [
-                phen_data_path(phen_fp, fmt, plate, well, str(tr["tile"]), "phenotype_info", "tsv")
+                phen_data_path(
+                    phen_fp, fmt, plate, well, str(tr["tile"]), "phenotype_info", "tsv"
+                )
                 for _, tr in gdf.iterrows()
             ]
             dfs = []
@@ -660,7 +772,9 @@ def process_phenotype(config, args):
             combined = pd.concat(dfs, ignore_index=True)
             combined = validate_dtypes(combined)
             atomic_write_parquet(combined, out)
-            print(f"    OK combine phenotype_info P{plate}/W{well} ({len(combined)} rows)")
+            print(
+                f"    OK combine phenotype_info P{plate}/W{well} ({len(combined)} rows)"
+            )
 
     # --- Step 8: Merge phenotype (per well) ---
     # merge is memory-bound (~WELL_PEAK_GB per well): parallelize across wells but cap
@@ -671,24 +785,42 @@ def process_phenotype(config, args):
         for (plate, well), gdf in post_seg_tc.groupby(["plate", "well"])
     ]
     merge_workers = _merge_worker_cap(w)
-    print(f"\n  Merge phenotype per well (concurrency={merge_workers}, ~{WELL_PEAK_GB} GB/well)...")
+    print(
+        f"\n  Merge phenotype per well (concurrency={merge_workers}, ~{WELL_PEAK_GB} GB/well)..."
+    )
     errs += run_parallel(merge_tasks, _merge_well_one, merge_workers, "Merge phenotype")
 
     # --- Step 9: Eval segmentation (per plate) ---
     print(f"\n  Eval per plate...")
     for plate in sorted(post_seg_tc["plate"].unique()):
-        overview_out = phen_plate_path(phen_fp, fmt, plate, "segmentation_overview", "tsv", "segmentation")
+        overview_out = phen_plate_path(
+            phen_fp, fmt, plate, "segmentation_overview", "tsv", "segmentation"
+        )
         if not out_exists(overview_out):
             with monitor_step("Eval segmentation"):
                 try:
-                    from lib.shared.eval_segmentation import segmentation_overview, plot_cell_density_heatmap
+                    from lib.shared.eval_segmentation import (
+                        segmentation_overview,
+                        plot_cell_density_heatmap,
+                    )
                     import matplotlib
+
                     matplotlib.use("Agg")
                     import matplotlib.pyplot as plt
 
                     stats_paths = [
-                        phen_data_path(phen_fp, fmt, plate, r["well"], r["tile"], "segmentation_stats", "tsv")
-                        for _, r in tile_combos[tile_combos["plate"] == plate].iterrows()
+                        phen_data_path(
+                            phen_fp,
+                            fmt,
+                            plate,
+                            r["well"],
+                            r["tile"],
+                            "segmentation_stats",
+                            "tsv",
+                        )
+                        for _, r in tile_combos[
+                            tile_combos["plate"] == plate
+                        ].iterrows()
                     ]
                     stats_paths = [p for p in stats_paths if Path(p).exists()]
 
@@ -697,26 +829,66 @@ def process_phenotype(config, args):
                         Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
                         overview_df.to_csv(overview_out, sep="\t", index=False)
 
-                        wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
-                        cells_paths = [phen_well_path(phen_fp, fmt, plate, w, "phenotype_info", "parquet") for w in wells]
+                        wells = tile_combos[tile_combos["plate"] == plate][
+                            "well"
+                        ].unique()
+                        cells_paths = [
+                            phen_well_path(
+                                phen_fp, fmt, plate, w, "phenotype_info", "parquet"
+                            )
+                            for w in wells
+                        ]
                         cells_paths = [p for p in cells_paths if Path(p).exists()]
 
                         md_paths = []
                         for w in wells:
-                            mp = str(pp_fp / "metadata" / "phenotype" / get_data_output_path(
-                                make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
+                            mp = str(
+                                pp_fp
+                                / "metadata"
+                                / "phenotype"
+                                / get_data_output_path(
+                                    make_loc(fmt, plate, w),
+                                    "combined_metadata",
+                                    "parquet",
+                                    fmt,
+                                )
+                            )
                             if Path(mp).exists():
                                 md_paths.append(mp)
 
                         if cells_paths and md_paths:
                             cells_df = read_parquets(cells_paths)
-                            md_df = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True)
+                            md_df = pd.concat(
+                                [pd.read_parquet(p) for p in md_paths],
+                                ignore_index=True,
+                            )
                             md_df = md_df.drop_duplicates(subset=["well", "tile"])
-                            summary, fig = plot_cell_density_heatmap(cells_df, metadata=md_df)
-                            heatmap_tsv = phen_plate_path(phen_fp, fmt, plate, "cell_density_heatmap", "tsv", "segmentation")
-                            heatmap_png = phen_plate_path(phen_fp, fmt, plate, "cell_density_heatmap", "png", "segmentation")
+                            summary, fig = plot_cell_density_heatmap(
+                                cells_df, metadata=md_df
+                            )
+                            heatmap_tsv = phen_plate_path(
+                                phen_fp,
+                                fmt,
+                                plate,
+                                "cell_density_heatmap",
+                                "tsv",
+                                "segmentation",
+                            )
+                            heatmap_png = phen_plate_path(
+                                phen_fp,
+                                fmt,
+                                plate,
+                                "cell_density_heatmap",
+                                "png",
+                                "segmentation",
+                            )
                             summary.to_csv(heatmap_tsv, index=False, sep="\t")
-                            fig.savefig(heatmap_png, dpi=300, bbox_inches="tight", transparent=True)
+                            fig.savefig(
+                                heatmap_png,
+                                dpi=300,
+                                bbox_inches="tight",
+                                transparent=True,
+                            )
                             plt.close(fig)
                         print(f"    OK eval_seg P{plate}")
                 except Exception as e:
@@ -726,7 +898,13 @@ def process_phenotype(config, args):
     # --- Step 10: Eval features (per plate) ---
     for plate in sorted(post_seg_tc["plate"].unique()):
         eval_features = [f"{prefix}_{ch}_min" for ch in channel_names]
-        first_out = phen_plate_path(phen_fp, fmt, plate, f"{eval_features[0]}_heatmap", "png", "features") if eval_features else None
+        first_out = (
+            phen_plate_path(
+                phen_fp, fmt, plate, f"{eval_features[0]}_heatmap", "png", "features"
+            )
+            if eval_features
+            else None
+        )
         if first_out and out_exists(first_out):
             print(f"    SKIP eval_features P{plate}")
             continue
@@ -734,11 +912,17 @@ def process_phenotype(config, args):
             try:
                 from lib.phenotype.eval_features import plot_feature_heatmap
                 import matplotlib
+
                 matplotlib.use("Agg")
                 import matplotlib.pyplot as plt
 
                 wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
-                min_paths = [phen_well_path(phen_fp, fmt, plate, w, "phenotype_cp_min", "parquet") for w in wells]
+                min_paths = [
+                    phen_well_path(
+                        phen_fp, fmt, plate, w, "phenotype_cp_min", "parquet"
+                    )
+                    for w in wells
+                ]
                 min_paths = [p for p in min_paths if Path(p).exists()]
                 if not min_paths:
                     print(f"    SKIP eval_features P{plate}: no inputs")
@@ -746,27 +930,55 @@ def process_phenotype(config, args):
 
                 md_paths = []
                 for w in wells:
-                    mp = str(pp_fp / "metadata" / "phenotype" / get_data_output_path(
-                        make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt))
+                    mp = str(
+                        pp_fp
+                        / "metadata"
+                        / "phenotype"
+                        / get_data_output_path(
+                            make_loc(fmt, plate, w), "combined_metadata", "parquet", fmt
+                        )
+                    )
                     if Path(mp).exists():
                         md_paths.append(mp)
 
                 phenotype_cp_min = read_parquets(min_paths)
-                metadata = pd.concat([pd.read_parquet(p) for p in md_paths], ignore_index=True).drop_duplicates(subset=["well", "tile"])
+                metadata = pd.concat(
+                    [pd.read_parquet(p) for p in md_paths], ignore_index=True
+                ).drop_duplicates(subset=["well", "tile"])
 
-                min_feature_names = [col for col in phenotype_cp_min.columns if col.endswith("_min")]
+                min_feature_names = [
+                    col for col in phenotype_cp_min.columns if col.endswith("_min")
+                ]
                 for feature_name in min_feature_names:
-                    tsv_out = phen_plate_path(phen_fp, fmt, plate, f"{feature_name}_heatmap", "tsv", "features")
-                    png_out = phen_plate_path(phen_fp, fmt, plate, f"{feature_name}_heatmap", "png", "features")
+                    tsv_out = phen_plate_path(
+                        phen_fp,
+                        fmt,
+                        plate,
+                        f"{feature_name}_heatmap",
+                        "tsv",
+                        "features",
+                    )
+                    png_out = phen_plate_path(
+                        phen_fp,
+                        fmt,
+                        plate,
+                        f"{feature_name}_heatmap",
+                        "png",
+                        "features",
+                    )
                     Path(tsv_out).parent.mkdir(parents=True, exist_ok=True)
                     df_summary, fig = plot_feature_heatmap(
-                        phenotype_cp_min, feature=feature_name,
-                        metadata=metadata, return_summary=True,
+                        phenotype_cp_min,
+                        feature=feature_name,
+                        metadata=metadata,
+                        return_summary=True,
                     )
                     df_summary.to_csv(tsv_out, index=False, sep="\t")
                     fig.savefig(png_out, dpi=300, bbox_inches="tight", transparent=True)
                     plt.close(fig)
-                print(f"    OK eval_features P{plate} ({len(min_feature_names)} features)")
+                print(
+                    f"    OK eval_features P{plate} ({len(min_feature_names)} features)"
+                )
             except Exception as e:
                 print(f"    ERR eval_features P{plate}: {e}")
                 errs += 1
@@ -775,40 +987,74 @@ def process_phenotype(config, args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Direct phenotype runner (bypasses Snakemake)")
+    p = argparse.ArgumentParser(
+        description="Direct phenotype runner (bypasses Snakemake)"
+    )
     p.add_argument("--config", required=True)
     p.add_argument("--max-tiles", type=int, default=None)
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--plate-filter", type=int, default=None)
-    p.add_argument("--tile-start", type=int, default=None,
-                   help="Slice tiles to [start:end] by sorted tile index (for sharding a well)")
+    p.add_argument(
+        "--tile-start",
+        type=int,
+        default=None,
+        help="Slice tiles to [start:end] by sorted tile index (for sharding a well)",
+    )
     p.add_argument("--tile-end", type=int, default=None)
-    p.add_argument("--gpu", action="store_true", help="Enable GPU for cellpose segmentation")
-    p.add_argument("--seg-gpus", type=int, default=1,
-                   help="Number of GPUs for segmentation (default: 1)")
-    p.add_argument("--seg-workers", type=int, default=None,
-                   help="Workers for segmentation step (default: seg-gpus if --gpu, else --workers)")
-    p.add_argument("--extract-workers", type=int, default=None,
-                   help="Cap on parallel workers for the post-seg extract_phenotype step "
-                        "(default: min(--workers, 96)). Lower to find the shared-disk I/O knee.")
-    p.add_argument("--step", choices=["pre-seg", "segment", "post-seg", "all"], default="all",
-                   help="pre-seg=IC+align (CPU), segment=cellpose (GPU), post-seg=extract+combine (CPU), all=everything")
-    p.add_argument("--save-ic-intermediate", action="store_true",
-                   help="Also persist illumination_corrected images (step-wise/Snakemake parity); "
-                        "default fuses IC+align and writes only 'aligned'")
-    p.add_argument("--allow-partial", action="store_true",
-                   help="Skip the pre-seg/segment completeness gate (for intentional sharded runs)")
+    p.add_argument(
+        "--gpu", action="store_true", help="Enable GPU for cellpose segmentation"
+    )
+    p.add_argument(
+        "--seg-gpus",
+        type=int,
+        default=1,
+        help="Number of GPUs for segmentation (default: 1)",
+    )
+    p.add_argument(
+        "--seg-workers",
+        type=int,
+        default=None,
+        help="Workers for segmentation step (default: seg-gpus if --gpu, else --workers)",
+    )
+    p.add_argument(
+        "--extract-workers",
+        type=int,
+        default=None,
+        help="Cap on parallel workers for the post-seg extract_phenotype step "
+        "(default: min(--workers, 96)). Lower to find the shared-disk I/O knee.",
+    )
+    p.add_argument(
+        "--step",
+        choices=["pre-seg", "segment", "post-seg", "all"],
+        default="all",
+        help="pre-seg=IC+align (CPU), segment=cellpose (GPU), post-seg=extract+combine (CPU), all=everything",
+    )
+    p.add_argument(
+        "--save-ic-intermediate",
+        action="store_true",
+        help="Also persist illumination_corrected images (step-wise/Snakemake parity); "
+        "default fuses IC+align and writes only 'aligned'",
+    )
+    p.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Skip the pre-seg/segment completeness gate (for intentional sharded runs)",
+    )
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
-    set_benchmark_context("phenotype", config["all"]["root_fp"], plate=args.plate_filter)
+    set_benchmark_context(
+        "phenotype", config["all"]["root_fp"], plate=args.plate_filter
+    )
     if args.gpu:
         config.setdefault("phenotype", {})["gpu"] = True
     fmt = config.get("all", {}).get("image_format", "tiff")
 
     print(f"{'#' * 60}")
     print(f"  Direct Phenotype Runner | format={fmt} gpu={args.gpu} step={args.step}")
-    print(f"  config={args.config} workers={args.workers} max_tiles={args.max_tiles or 'all'}")
+    print(
+        f"  config={args.config} workers={args.workers} max_tiles={args.max_tiles or 'all'}"
+    )
     print(f"  seg_gpus={args.seg_gpus} seg_workers={args.seg_workers or 'auto'}")
     print(f"  extract_workers={args.extract_workers or 'auto (min(w,96))'}")
     print(f"{'#' * 60}")

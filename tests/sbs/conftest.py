@@ -9,12 +9,15 @@ import pandas as pd
 import pytest
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
-BARCODE_LIB_FP = Path("/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv")
+BARCODE_LIB_FP = Path(
+    "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+)
 
 # Only use tiles where both golden files exist
 _all_tiles = ["P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100"]
 INTEGRATION_TILES = [
-    t for t in _all_tiles
+    t
+    for t in _all_tiles
     if (GOLDEN_DIR / f"{t}__reads.tsv").exists()
     and (GOLDEN_DIR / f"{t}__cells.tsv").exists()
 ]

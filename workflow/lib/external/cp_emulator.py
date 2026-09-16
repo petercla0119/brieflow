@@ -635,9 +635,12 @@ def cp_colocalization_all_channels(r, mode="multichannel", **kwargs):
         _ranks = [rankdata(V[:, c], method="dense") for c in range(channels)]
         results = [
             measure_colocalization(
-                V[:, first], V[:, second],
-                _A_thresh=_thr[first], _B_thresh=_thr[second],
-                _A_ranks=_ranks[first], _B_ranks=_ranks[second],
+                V[:, first],
+                V[:, second],
+                _A_thresh=_thr[first],
+                _B_thresh=_thr[second],
+                _A_ranks=_ranks[first],
+                _B_ranks=_ranks[second],
             )
             for first, second in combinations(range(channels), 2)
         ]
@@ -661,8 +664,13 @@ def cp_colocalization(r, first, second, mode="multichannel", **kwargs):
 
 
 def measure_colocalization(
-    A, B, threshold="otsu",
-    _A_thresh=None, _B_thresh=None, _A_ranks=None, _B_ranks=None,
+    A,
+    B,
+    threshold="otsu",
+    _A_thresh=None,
+    _B_thresh=None,
+    _A_ranks=None,
+    _B_ranks=None,
 ):
     """Measures overlap, k1/k2, manders, and rank weighted colocalization coefficients.
     References:

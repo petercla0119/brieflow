@@ -6,6 +6,7 @@ env-independent (skimage/polars/tifffile are not needed to exercise these two he
 
 Run: python tests/direct/test_phenotype_direct_niceties.py
 """
+
 import os
 import sys
 import tempfile
@@ -25,16 +26,34 @@ def _stub(name, **attrs):
 # stub the heavy lib.shared.* imports the runner does at module load
 _stub("lib")
 _stub("lib.shared")
-_stub("lib.shared.file_utils", get_data_output_path=lambda *a, **k: "",
-      get_image_output_path=lambda *a, **k: "", validate_dtypes=lambda df: df)
-_stub("lib.shared.image_io", read_image=lambda *a, **k: None, save_image=lambda *a, **k: None)
+_stub(
+    "lib.shared.file_utils",
+    get_data_output_path=lambda *a, **k: "",
+    get_image_output_path=lambda *a, **k: "",
+    validate_dtypes=lambda df: df,
+)
+_stub(
+    "lib.shared.image_io",
+    read_image=lambda *a, **k: None,
+    save_image=lambda *a, **k: None,
+)
 _stub("lib.shared.illumination_correction", apply_ic_field=lambda *a, **k: None)
-_stub("lib.shared.parquet_io", write_parquet=lambda df, p: df.to_parquet(p),
-      read_parquets=lambda *a, **k: None)
-_stub("lib.shared.rule_utils", get_alignment_params=lambda *a, **k: {},
-      get_segmentation_params=lambda *a, **k: {})
+_stub(
+    "lib.shared.parquet_io",
+    write_parquet=lambda df, p: df.to_parquet(p),
+    read_parquets=lambda *a, **k: None,
+)
+_stub(
+    "lib.shared.rule_utils",
+    get_alignment_params=lambda *a, **k: {},
+    get_segmentation_params=lambda *a, **k: {},
+)
 
-_stub("lib.shared.resource_monitor", monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(), set_benchmark_context=lambda *a, **k: None)  # ponytail: nullcontext stub; real context manager is only needed when the step actually runs
+_stub(
+    "lib.shared.resource_monitor",
+    monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(),
+    set_benchmark_context=lambda *a, **k: None,
+)  # ponytail: nullcontext stub; real context manager is only needed when the step actually runs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
 import run_phenotype_direct as rpd  # noqa: E402
@@ -55,14 +74,14 @@ def test_merge_worker_cap():
     try:
         # derive from WELL_PEAK_GB so retuning the constant does not break the test
         gb = rpd.WELL_PEAK_GB
-        rpd._available_gb = lambda: 10.0 * gb     # mem cap = 10
-        assert rpd._merge_worker_cap(8) == 8      # requested < mem cap
-        assert rpd._merge_worker_cap(20) == 10    # capped by mem
-        rpd._available_gb = lambda: 2.0 * gb      # mem cap = 2
+        rpd._available_gb = lambda: 10.0 * gb  # mem cap = 10
+        assert rpd._merge_worker_cap(8) == 8  # requested < mem cap
+        assert rpd._merge_worker_cap(20) == 10  # capped by mem
+        rpd._available_gb = lambda: 2.0 * gb  # mem cap = 2
         assert rpd._merge_worker_cap(8) == 2
-        rpd._available_gb = lambda: None    # unknown -> conservative default 2
+        rpd._available_gb = lambda: None  # unknown -> conservative default 2
         assert rpd._merge_worker_cap(8) == 2
-        assert rpd._merge_worker_cap(1) == 1      # never below 1
+        assert rpd._merge_worker_cap(1) == 1  # never below 1
     finally:
         rpd._available_gb = orig
 

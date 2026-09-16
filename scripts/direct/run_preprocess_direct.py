@@ -24,9 +24,17 @@ import yaml
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "workflow"))
 
-from lib.preprocess.preprocess import convert_to_array, extract_metadata, get_data_config
+from lib.preprocess.preprocess import (
+    convert_to_array,
+    extract_metadata,
+    get_data_config,
+)
 from lib.preprocess.file_utils import get_metadata_wildcard_combos, get_sample_fps
-from lib.shared.file_utils import get_data_output_path, get_image_output_path, validate_dtypes
+from lib.shared.file_utils import (
+    get_data_output_path,
+    get_image_output_path,
+    validate_dtypes,
+)
 from lib.shared.illumination_correction import calculate_ic_field
 from lib.shared.image_io import save_image
 from lib.shared.parquet_io import write_parquet
@@ -36,6 +44,7 @@ from lib.shared.resource_monitor import monitor_step, set_benchmark_context
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
+
 
 def make_loc(img_fmt, plate, well=None, tile=None, cycle=None):
     """Build ordered data_location dict. For zarr, splits well into row + col."""
@@ -88,10 +97,22 @@ def out_exists(path):
 # Worker functions (run in child processes)
 # ---------------------------------------------------------------------------
 
+
 def _extract_one(task):
     """Extract metadata for one tile/cycle/round combination."""
-    (sample_files, meta_files, plate, well, tile, cycle, rnd,
-     data_fmt, data_org, ext_metadata_fp, output_path) = task
+    (
+        sample_files,
+        meta_files,
+        plate,
+        well,
+        tile,
+        cycle,
+        rnd,
+        data_fmt,
+        data_org,
+        ext_metadata_fp,
+        output_path,
+    ) = task
     tag = f"P{plate}/W{well}/T{tile}" + (f"/C{cycle}" if cycle else "")
     if out_exists(output_path):
         return "skip", tag
@@ -104,9 +125,14 @@ def _extract_one(task):
             file_input = sample_files
             mfp = ext_metadata_fp
         df = extract_metadata(
-            file_input, plate=plate, well=well, tile=tile,
-            cycle=cycle, round=rnd,
-            data_format=data_fmt, data_organization=data_org,
+            file_input,
+            plate=plate,
+            well=well,
+            tile=tile,
+            cycle=cycle,
+            round=rnd,
+            data_format=data_fmt,
+            data_organization=data_org,
             metadata_file_path=mfp,
         )
         df.to_csv(output_path, index=False, sep="\t")
@@ -125,8 +151,12 @@ def _convert_one(task):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         pos = tile_int if data_org == "well" else None
         arr = convert_to_array(
-            files, data_format=data_fmt, data_organization=data_org,
-            position=pos, channel_order_flip=flip, n_z_planes=nz,
+            files,
+            data_format=data_fmt,
+            data_organization=data_org,
+            position=pos,
+            channel_order_flip=flip,
+            n_z_planes=nz,
         )
         save_image(arr, output_path, channel_names=ch_names)
         return "ok", tag
@@ -146,9 +176,13 @@ def run_parallel(tasks, fn, workers, label, max_tasks_per_child=None):
     pool_kwargs = {"max_workers": workers}
     if max_tasks_per_child is not None:
         import multiprocessing as _mp
+
         pool_kwargs["mp_context"] = _mp.get_context("spawn")
         pool_kwargs["max_tasks_per_child"] = max_tasks_per_child
-    with monitor_step(label, n_workers=workers), ProcessPoolExecutor(**pool_kwargs) as pool:
+    with (
+        monitor_step(label, n_workers=workers),
+        ProcessPoolExecutor(**pool_kwargs) as pool,
+    ):
         futures = {pool.submit(fn, t): i for i, t in enumerate(tasks)}
         for fut in as_completed(futures):
             status, msg = fut.result()
@@ -162,7 +196,9 @@ def run_parallel(tasks, fn, workers, label, max_tasks_per_child=None):
             total = ok + skip + err
             if total == n or total % max(1, n // 20) == 0:
                 elapsed = time.time() - t0
-                print(f"    [{total}/{n}] {elapsed:.0f}s  new={ok} skip={skip} err={err}")
+                print(
+                    f"    [{total}/{n}] {elapsed:.0f}s  new={ok} skip={skip} err={err}"
+                )
     print(f"  {label}: done in {time.time() - t0:.1f}s")
     return err
 
@@ -170,6 +206,7 @@ def run_parallel(tasks, fn, workers, label, max_tasks_per_child=None):
 # ---------------------------------------------------------------------------
 # IC field step (well-group parallelism)
 # ---------------------------------------------------------------------------
+
 
 def _ic_per_group_threads(total_workers, concurrency):
     """Threads per IC group when running `concurrency` groups concurrently.
@@ -193,8 +230,11 @@ def _calculate_ic_one(task):
     try:
         Path(ic_out).parent.mkdir(parents=True, exist_ok=True)
         field = calculate_ic_field(
-            inputs, threading=True, n_jobs=task["n_jobs"],
-            sample_fraction=task["sample_fraction"], smooth=task["smooth"],
+            inputs,
+            threading=True,
+            n_jobs=task["n_jobs"],
+            sample_fraction=task["sample_fraction"],
+            smooth=task["smooth"],
             random_seed=task["random_seed"],
         )
         save_image(field, ic_out)
@@ -228,18 +268,30 @@ def run_ic_step(image_type, combos, pp_fp, fmt, pp, total_workers, has_cycle):
 
         ic_loc = make_loc(fmt, plate, well, cycle=cycle)
         ic_out = str(
-            pp_fp / "ic_fields" / image_type / get_data_output_path(ic_loc, "ic_field", fmt, fmt)
+            pp_fp
+            / "ic_fields"
+            / image_type
+            / get_data_output_path(ic_loc, "ic_field", fmt, fmt)
         )
         inputs = []
         for _, tr in gdf.iterrows():
             tl = make_loc(fmt, plate, well, str(tr["tile"]), cycle)
             inputs.append(
-                str(pp_fp / get_image_output_path(tl, "image", fmt, image_subdir=image_type))
+                str(
+                    pp_fp
+                    / get_image_output_path(tl, "image", fmt, image_subdir=image_type)
+                )
             )
-        tasks.append({
-            "tag": tag, "ic_out": ic_out, "inputs": inputs,
-            "sample_fraction": sample_frac, "smooth": ic_smooth, "random_seed": ic_seed,
-        })
+        tasks.append(
+            {
+                "tag": tag,
+                "ic_out": ic_out,
+                "inputs": inputs,
+                "sample_fraction": sample_frac,
+                "smooth": ic_smooth,
+                "random_seed": ic_seed,
+            }
+        )
 
     if concurrency <= 1:
         # Serial in-process loop, each IC using all workers — the backward-compat path.
@@ -260,18 +312,24 @@ def run_ic_step(image_type, combos, pp_fp, fmt, pp, total_workers, has_cycle):
         return errs
 
     per_group = _ic_per_group_threads(total_workers, concurrency)
-    print(f"\n  IC fields ({image_type}): {concurrency} groups × {per_group} threads/group")
+    print(
+        f"\n  IC fields ({image_type}): {concurrency} groups × {per_group} threads/group"
+    )
     for task in tasks:
         task["n_jobs"] = per_group
     return run_parallel(
-        tasks, _calculate_ic_one, workers=concurrency,
-        label=f"Calculate IC field ({image_type})", max_tasks_per_child=1,
+        tasks,
+        _calculate_ic_one,
+        workers=concurrency,
+        label=f"Calculate IC field ({image_type})",
+        max_tasks_per_child=1,
     )
 
 
 # ---------------------------------------------------------------------------
 # Main processing per image type
 # ---------------------------------------------------------------------------
+
 
 def process(image_type, config, args):
     """Run all preprocessing steps for one image type (sbs or phenotype)."""
@@ -327,7 +385,9 @@ def process(image_type, config, args):
 
     print(f"\n{'=' * 60}")
     print(f"  {image_type.upper()}: {len(combos)} tile combos")
-    print(f"  data_format={dc['data_format']}  org={dc['image_data_organization']}  img_fmt={fmt}")
+    print(
+        f"  data_format={dc['data_format']}  org={dc['image_data_organization']}  img_fmt={fmt}"
+    )
     print(f"  metadata combos: {len(md_combos)}  cols: {md_cols}")
     print(f"{'=' * 60}")
 
@@ -346,7 +406,10 @@ def process(image_type, config, args):
 
         md_loc = make_md_loc(fmt, r, md_cols)
         out = str(
-            pp_fp / "metadata" / image_type / get_data_output_path(md_loc, "metadata", "tsv", fmt)
+            pp_fp
+            / "metadata"
+            / image_type
+            / get_data_output_path(md_loc, "metadata", "tsv", fmt)
         )
 
         # Build filter kwargs for get_sample_fps
@@ -379,12 +442,21 @@ def process(image_type, config, args):
             except Exception:
                 continue
 
-        tasks.append((
-            sample_files, meta_file_list, plate, well, tile, cycle, rnd,
-            dc["data_format"], dc["image_data_organization"],
-            pp.get(f"{image_type}_metadata_samples_df_fp"),
-            out,
-        ))
+        tasks.append(
+            (
+                sample_files,
+                meta_file_list,
+                plate,
+                well,
+                tile,
+                cycle,
+                rnd,
+                dc["data_format"],
+                dc["image_data_organization"],
+                pp.get(f"{image_type}_metadata_samples_df_fp"),
+                out,
+            )
+        )
 
     # phenotype extract_metadata is now metadata-only (nd2.ND2File.text_info, no pixel
     # decode -- commit e6c09f1); peak RSS dropped from ~90+GB/well to ~MB, so the old
@@ -392,7 +464,13 @@ def process(image_type, config, args):
     # self-limits worker use. A full-well imread regression is caught by
     # tests/unit/test_parse_binning_nd2.py (imread raises).
     extract_workers = args.workers
-    errs += run_parallel(tasks, _extract_one, extract_workers, f"Extract metadata ({image_type})", max_tasks_per_child=1)
+    errs += run_parallel(
+        tasks,
+        _extract_one,
+        extract_workers,
+        f"Extract metadata ({image_type})",
+        max_tasks_per_child=1,
+    )
 
     # ------------------------------------------------------------------
     # Step 2: Convert images
@@ -407,7 +485,9 @@ def process(image_type, config, args):
         cycle = str(r["cycle"]) if has_cycle else None
 
         loc = make_loc(fmt, plate, well, tile, cycle)
-        out = str(pp_fp / get_image_output_path(loc, "image", fmt, image_subdir=image_type))
+        out = str(
+            pp_fp / get_image_output_path(loc, "image", fmt, image_subdir=image_type)
+        )
 
         if out in seen_out:
             continue
@@ -432,13 +512,22 @@ def process(image_type, config, args):
             print(f"    WARN convert P{plate}/W{well}/T{tile}: {e}")
             continue
 
-        tasks.append((
-            files, dc["data_format"], dc["image_data_organization"],
-            int(tile), dc["channel_order_flip"], dc.get("n_z_planes"),
-            dc.get("channel_order"), out,
-        ))
+        tasks.append(
+            (
+                files,
+                dc["data_format"],
+                dc["image_data_organization"],
+                int(tile),
+                dc["channel_order_flip"],
+                dc.get("n_z_planes"),
+                dc.get("channel_order"),
+                out,
+            )
+        )
 
-    errs += run_parallel(tasks, _convert_one, args.workers, f"Convert images ({image_type})")
+    errs += run_parallel(
+        tasks, _convert_one, args.workers, f"Convert images ({image_type})"
+    )
 
     # ------------------------------------------------------------------
     # Step 3: Calculate IC fields (per well-group; see run_ic_step)
@@ -453,7 +542,9 @@ def process(image_type, config, args):
         plate, well = str(plate), str(well)
         c_loc = make_loc(fmt, plate, well)
         c_out = str(
-            pp_fp / "metadata" / image_type
+            pp_fp
+            / "metadata"
+            / image_type
             / get_data_output_path(c_loc, "combined_metadata", "parquet", fmt)
         )
 
@@ -466,7 +557,12 @@ def process(image_type, config, args):
         for _, mr in gdf.iterrows():
             ml = make_md_loc(fmt, mr, md_cols)
             md_inputs.append(
-                str(pp_fp / "metadata" / image_type / get_data_output_path(ml, "metadata", "tsv", fmt))
+                str(
+                    pp_fp
+                    / "metadata"
+                    / image_type
+                    / get_data_output_path(ml, "metadata", "tsv", fmt)
+                )
             )
 
         dfs = []
@@ -515,18 +611,31 @@ def process(image_type, config, args):
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     p = argparse.ArgumentParser(description="Direct preprocessing (bypasses Snakemake)")
     p.add_argument("--config", required=True, help="Path to config.yml")
-    p.add_argument("--max-tiles", type=int, default=None, help="Process only first N tiles")
-    p.add_argument("--workers", type=int, default=8, help="Parallel workers for per-tile steps")
-    p.add_argument("--plate-filter", type=int, default=None, help="Process only this plate")
-    p.add_argument("--image-type", choices=["sbs", "phenotype", "both"], default="both",
-                   help="Which image type(s) to preprocess")
+    p.add_argument(
+        "--max-tiles", type=int, default=None, help="Process only first N tiles"
+    )
+    p.add_argument(
+        "--workers", type=int, default=8, help="Parallel workers for per-tile steps"
+    )
+    p.add_argument(
+        "--plate-filter", type=int, default=None, help="Process only this plate"
+    )
+    p.add_argument(
+        "--image-type",
+        choices=["sbs", "phenotype", "both"],
+        default="both",
+        help="Which image type(s) to preprocess",
+    )
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
-    set_benchmark_context("preprocess", config["all"]["root_fp"], plate=args.plate_filter)
+    set_benchmark_context(
+        "preprocess", config["all"]["root_fp"], plate=args.plate_filter
+    )
     img_fmt = config.get("all", {}).get("image_format", "tiff")
 
     print(f"{'#' * 60}")
@@ -534,7 +643,9 @@ def main():
     print(f"  config={args.config}")
     print(f"  root={config['all']['root_fp']}")
     print(f"  format={img_fmt}  workers={args.workers}")
-    print(f"  max_tiles={args.max_tiles or 'all'}  plate_filter={args.plate_filter or 'none'}")
+    print(
+        f"  max_tiles={args.max_tiles or 'all'}  plate_filter={args.plate_filter or 'none'}"
+    )
     print(f"  image_type={args.image_type}")
     print(f"{'#' * 60}")
 

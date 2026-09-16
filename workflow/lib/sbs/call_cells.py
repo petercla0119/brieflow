@@ -552,7 +552,7 @@ def _build_hamming1_index(barcodes_tuple):
             for sub in alphabet:
                 if sub == base:
                     continue
-                neighbor = barcode[:i] + sub + barcode[i + 1:]
+                neighbor = barcode[:i] + sub + barcode[i + 1 :]
                 if neighbor in index:
                     if index[neighbor] != barcode:
                         index[neighbor] = _AMBIGUOUS  # collision
@@ -581,13 +581,13 @@ def error_correct_reads(reads, reference, max_distance=2, distance_metric="hammi
         correction = {}
         for read in unique_reads:
             if read in reference_set:
-                correction[read] = read          # exact match
+                correction[read] = read  # exact match
             else:
                 match = index.get(read)
                 if match is None or match is _AMBIGUOUS:
-                    correction[read] = read      # no unique match — leave unchanged
+                    correction[read] = read  # no unique match — leave unchanged
                 else:
-                    correction[read] = match     # unique 1-edit correction
+                    correction[read] = match  # unique 1-edit correction
         return reads.map(correction)
 
     # Slow path: generic distance matrix (unchanged)
@@ -602,8 +602,10 @@ def error_correct_reads(reads, reference, max_distance=2, distance_metric="hammi
         )
         min_dist = dist_to_ref.min(axis=1)
         unique_min = np.array(
-            [np.sum(dist_to_ref[i] == min_dist[i]) == 1
-             for i in range(dist_to_ref.shape[0])]
+            [
+                np.sum(dist_to_ref[i] == min_dist[i]) == 1
+                for i in range(dist_to_ref.shape[0])
+            ]
         )
         do_correct = unique_min & (min_dist <= max_distance)
         argmins = dist_to_ref.argmin(axis=1)
@@ -646,13 +648,21 @@ def _barcode_distance_matrix(barcodes_1, barcodes_2=False, distance_metric="hamm
 
     return bc_distance_matrix
 
+
 if __name__ == "__main__":
     import pandas as pd
+
     # Exact match — no correction needed
     ref = pd.Series(["AAAAAAAAAAAA", "CCCCCCCCCCCC", "GGGGGGGGGGGG"])
-    reads = pd.Series(["AAAAAAAAAAAA", "AAAAAAAAAAAC",  # exact, 1-edit from ref[0]
-                        "CCCCCCCCCCCC", "AAAAAAAAAAAT",  # exact, 1-edit from ref[0]
-                        "AAAAAAAAAAGG"])                  # 2-edit from ref[0], no match
+    reads = pd.Series(
+        [
+            "AAAAAAAAAAAA",
+            "AAAAAAAAAAAC",  # exact, 1-edit from ref[0]
+            "CCCCCCCCCCCC",
+            "AAAAAAAAAAAT",  # exact, 1-edit from ref[0]
+            "AAAAAAAAAAGG",
+        ]
+    )  # 2-edit from ref[0], no match
     out = error_correct_reads(reads, ref, max_distance=1, distance_metric="hamming")
     assert out.iloc[0] == "AAAAAAAAAAAA", "exact match"
     assert out.iloc[1] == "AAAAAAAAAAAA", "1-edit correction"

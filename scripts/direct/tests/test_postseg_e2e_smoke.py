@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+
 def _thread_cap(workers: int) -> str:
     # Fill idle cores instead of pinning BLAS/OMP at 2: size threads to this box.
     # ponytail: ceiling 12 — BLAS/OMP gains flatten past ~8-16; raise if a run shows headroom.
@@ -45,7 +46,9 @@ WT = Path(os.environ.get("WT", str(Path(__file__).resolve().parents[3])))
 RUNNER = WT / "scripts" / "direct" / "run_phenotype_direct.py"
 sys.path.insert(0, str(WT / "workflow"))
 
-ANALYSIS = Path(os.environ.get("ANALYSIS", "/mnt/work/broad-analysis/broad-tdp-gws/analysis"))
+ANALYSIS = Path(
+    os.environ.get("ANALYSIS", "/mnt/work/broad-analysis/broad-tdp-gws/analysis")
+)
 REAL_PHEN = ANALYSIS / "brieflow_output" / "phenotype"
 REAL_META = ANALYSIS / "brieflow_output" / "preprocess" / "metadata"
 REAL_CONFIG = ANALYSIS / "config" / "config.yml"
@@ -70,9 +73,17 @@ def _discover_well_tiles(n_wells=2):
     if not root.is_dir():
         return []
     picks = []
-    for row_dir in sorted(p for p in root.iterdir() if p.is_dir() and re.fullmatch(r"[A-Za-z]+", p.name)):
-        for col_dir in sorted((p for p in row_dir.iterdir() if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name)):
-            for t_dir in sorted((p for p in col_dir.iterdir() if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name)):
+    for row_dir in sorted(
+        p for p in root.iterdir() if p.is_dir() and re.fullmatch(r"[A-Za-z]+", p.name)
+    ):
+        for col_dir in sorted(
+            (p for p in row_dir.iterdir() if p.is_dir() and p.name.isdigit()),
+            key=lambda p: int(p.name),
+        ):
+            for t_dir in sorted(
+                (p for p in col_dir.iterdir() if p.is_dir() and p.name.isdigit()),
+                key=lambda p: int(p.name),
+            ):
                 lbl = t_dir / "labels"
                 if (lbl / "nuclei").exists() and (lbl / "cells").exists():
                     picks.append((row_dir.name, col_dir.name, t_dir.name))
@@ -93,7 +104,9 @@ def postseg_run(tmp_path_factory):
         pytest.skip(f"preprocess metadata not found: {REAL_META}")
     picks = _discover_well_tiles(2)
     if not picks:
-        pytest.skip(f"no plate-{PLATE} nuclei+cells label tiles under {REAL_PHEN / STORE}")
+        pytest.skip(
+            f"no plate-{PLATE} nuclei+cells label tiles under {REAL_PHEN / STORE}"
+        )
 
     import yaml
 
@@ -127,13 +140,30 @@ def postseg_run(tmp_path_factory):
     env = dict(os.environ)
     workers = 2  # 2 tiles -> 2 processes; each gets the rest of the box as threads
     tcap = _thread_cap(workers)
-    env.update(OMP_NUM_THREADS=tcap, MKL_NUM_THREADS=tcap,
-               OPENBLAS_NUM_THREADS=tcap, NUMEXPR_MAX_THREADS=tcap)
+    env.update(
+        OMP_NUM_THREADS=tcap,
+        MKL_NUM_THREADS=tcap,
+        OPENBLAS_NUM_THREADS=tcap,
+        NUMEXPR_MAX_THREADS=tcap,
+    )
     proc = subprocess.run(
-        [sys.executable, str(RUNNER), "--config", str(cfg_fp),
-         "--step", "post-seg", "--plate-filter", str(PLATE), "--workers", str(workers)],
+        [
+            sys.executable,
+            str(RUNNER),
+            "--config",
+            str(cfg_fp),
+            "--step",
+            "post-seg",
+            "--plate-filter",
+            str(PLATE),
+            "--workers",
+            str(workers),
+        ],
         cwd=str(WT / "scripts" / "direct"),
-        env=env, capture_output=True, text=True, timeout=1800,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1800,
     )
     return picks, root_fp, proc
 
@@ -158,17 +188,30 @@ def test_cytoplasm_labels_nontrivial(postseg_run):
     read_image = _read_image_or_skip()
     picks, root_fp, proc = postseg_run
     for row, col, tile in picks:
-        cyto_p = root_fp / "phenotype" / STORE / row / col / tile / "labels" / "identified_cytoplasms"
+        cyto_p = (
+            root_fp
+            / "phenotype"
+            / STORE
+            / row
+            / col
+            / tile
+            / "labels"
+            / "identified_cytoplasms"
+        )
         assert cyto_p.exists(), f"cytoplasm labels missing for {row}{col}/{tile}"
         cyto = read_image(cyto_p)
         n_labels = len(set(np.unique(cyto).tolist()) - {0})
-        assert n_labels > 0, f"cytoplasm all-background for {row}{col}/{tile} (gate returned None?)"
+        assert n_labels > 0, (
+            f"cytoplasm all-background for {row}{col}/{tile} (gate returned None?)"
+        )
 
 
 def test_phenotype_parquet_shape_and_dtypes(postseg_run):
     picks, root_fp, proc = postseg_run
     pq_dir = root_fp / "phenotype" / "parquets"
-    parquets = sorted(pq_dir.rglob("*phenotype_cp.parquet"))  # excludes *_cp_min / _info
+    parquets = sorted(
+        pq_dir.rglob("*phenotype_cp.parquet")
+    )  # excludes *_cp_min / _info
     assert parquets, f"no phenotype_cp.parquet under {pq_dir}"
 
     col_sets = []
@@ -182,8 +225,12 @@ def test_phenotype_parquet_shape_and_dtypes(postseg_run):
         # plate/tile wildcard int-cast dtype (cp_emulator, ref 6421d94): a
         # regression there resurfaces as object/str plate|tile and silently
         # breaks downstream integer joins. Pin them to integer.
-        assert np.issubdtype(df["plate"].dtype, np.integer), f"plate dtype {df['plate'].dtype} not int ({pq})"
-        assert np.issubdtype(df["tile"].dtype, np.integer), f"tile dtype {df['tile'].dtype} not int ({pq})"
+        assert np.issubdtype(df["plate"].dtype, np.integer), (
+            f"plate dtype {df['plate'].dtype} not int ({pq})"
+        )
+        assert np.issubdtype(df["tile"].dtype, np.integer), (
+            f"tile dtype {df['tile'].dtype} not int ({pq})"
+        )
         col_sets.append(frozenset(df.columns))
 
     # Cross-well schema mismatch: every well's per-well parquet must share one
