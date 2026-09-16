@@ -52,8 +52,19 @@ def stub_lib_modules():
     were already present are restored to the original module object. Stubbing
     the same name twice keeps the outermost saved value, so the restore is
     correct regardless of call order.
+
+    Any ``run_*_direct`` runner imported inside the block is also evicted. The
+    runner binds the stubs at its own import time and is then cached under its
+    own name, so leaving it behind hands the next test a runner whose
+    ``monitor_step`` is a ``nullcontext`` stub -- which is how
+    ``tests/unit/test_ic_group_threads.py`` came to fail with
+    ``'nullcontext' object has no attribute 'start'``. Evicting it means each
+    importer builds the runner against whatever is current.
     """
     saved = {}
+    runners_before = {
+        n for n in sys.modules if n.startswith("run_") and n.endswith("_direct")
+    }
 
     def stub(name, **attrs):
         saved.setdefault(name, sys.modules.get(name, _MISSING))
@@ -66,6 +77,14 @@ def stub_lib_modules():
     try:
         yield stub
     finally:
+        for name in [
+            n
+            for n in sys.modules
+            if n.startswith("run_")
+            and n.endswith("_direct")
+            and n not in runners_before
+        ]:
+            sys.modules.pop(name, None)
         for name, previous in saved.items():
             if previous is _MISSING:
                 sys.modules.pop(name, None)

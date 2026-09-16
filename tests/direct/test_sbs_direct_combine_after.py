@@ -10,57 +10,56 @@ Run: python tests/direct/test_sbs_direct_combine_after.py
 """
 
 import sys
-import types
 from pathlib import Path
 
-
-def _stub(name, **attrs):
-    m = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(m, k, v)
-    sys.modules[name] = m
+# tests/direct is a package, so its directory is not on sys.path under pytest;
+# add it so the shared stub helper imports both here and under bare
+# `python tests/direct/<file>.py` execution.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lib_stubs import stub_lib_modules  # noqa: E402
 
 
 # stub the heavy lib.shared.* imports the runner does at module load
-_stub("lib")
-_stub("lib.shared")
-_stub(
-    "lib.shared.file_utils",
-    get_data_output_path=lambda *a, **k: "",
-    get_image_output_path=lambda *a, **k: "",
-    validate_dtypes=lambda df: df,
-)
-_stub(
-    "lib.shared.image_io",
-    read_image=lambda *a, **k: None,
-    save_image=lambda *a, **k: None,
-)
-_stub(
-    "lib.shared.illumination_correction",
-    apply_ic_field=lambda *a, **k: None,
-    combine_ic_images=lambda *a, **k: None,
-)
-_stub(
-    "lib.shared.parquet_io",
-    write_parquet=lambda *a, **k: None,
-    read_parquets=lambda *a, **k: None,
-    read_table=lambda *a, **k: None,
-)
-_stub("lib.shared.combine_dfs", combine_tile_dfs=lambda *a, **k: None)
-_stub(
-    "lib.shared.rule_utils",
-    get_call_cells_params=lambda *a, **k: {},
-    get_segmentation_params=lambda *a, **k: {},
-    get_spot_detection_params=lambda *a, **k: {},
-)
-_stub(
-    "lib.shared.resource_monitor",
-    monitor_step=lambda *a, **k: None,
-    set_benchmark_context=lambda *a, **k: None,
-)
+with stub_lib_modules() as _stub:
+    _stub("lib")
+    _stub("lib.shared")
+    _stub(
+        "lib.shared.file_utils",
+        get_data_output_path=lambda *a, **k: "",
+        get_image_output_path=lambda *a, **k: "",
+        validate_dtypes=lambda df: df,
+    )
+    _stub(
+        "lib.shared.image_io",
+        read_image=lambda *a, **k: None,
+        save_image=lambda *a, **k: None,
+    )
+    _stub(
+        "lib.shared.illumination_correction",
+        apply_ic_field=lambda *a, **k: None,
+        combine_ic_images=lambda *a, **k: None,
+    )
+    _stub(
+        "lib.shared.parquet_io",
+        write_parquet=lambda *a, **k: None,
+        read_parquets=lambda *a, **k: None,
+        read_table=lambda *a, **k: None,
+    )
+    _stub("lib.shared.combine_dfs", combine_tile_dfs=lambda *a, **k: None)
+    _stub(
+        "lib.shared.rule_utils",
+        get_call_cells_params=lambda *a, **k: {},
+        get_segmentation_params=lambda *a, **k: {},
+        get_spot_detection_params=lambda *a, **k: {},
+    )
+    _stub(
+        "lib.shared.resource_monitor",
+        monitor_step=lambda *a, **k: None,
+        set_benchmark_context=lambda *a, **k: None,
+    )
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
-import run_sbs_direct as rsd  # noqa: E402
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
+    import run_sbs_direct as rsd  # noqa: E402
 
 
 def test_post_seg_runs_combine_on_full_tile_set():
