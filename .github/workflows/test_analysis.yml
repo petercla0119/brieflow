@@ -12,6 +12,9 @@ on:
   workflow_dispatch:
 
 # A force-push should supersede its own in-flight run, not queue behind it.
+# Workflow-level, so the group covers the whole run: every matrix leg of a
+# superseded run is cancelled together. Do not add matrix values to the group --
+# that would let a stale leg outlive the run that replaced it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -19,6 +22,15 @@ concurrency:
 jobs:
   test-analysis:
     runs-on: ubuntu-latest
+
+    # tiff/zarr run the Snakemake pipeline in each output format; direct runs the
+    # four direct runners, which is the path every real plate run takes and which
+    # Snakemake never touches (#52). One job with three legs so all three reuse
+    # the conda setup and disk cleanup below.
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [tiff, zarr, direct]
 
     steps:
       - name: Checkout code
@@ -91,19 +103,57 @@ jobs:
           python small_test_analysis_setup.py
 
       # Run Brieflow
-      - name: Run Brieflow
+      - name: Run Brieflow (${{ matrix.leg }})
+        if: matrix.leg != 'direct'
         shell: bash -l {0}
         working-directory: tests/small_test_analysis
         run: |
           conda activate brieflow_ci
           mkdir -p "$PWD/tmp"
           export TMPDIR="$PWD/tmp"
-          sh run_brieflow.sh
+          sh run_brieflow.sh ${{ matrix.leg == 'zarr' && '--zarr' || '' }}
 
-      # Run Pytest. -rs surfaces skip reasons, so a machine-gated E2E test
-      # (scripts/direct/tests/test_postseg_e2e_smoke.py) reads as a documented
-      # skip in the run summary instead of as coverage.
+      # Run the direct runners (the production path; Snakemake never calls them)
+      - name: Run direct runners
+        if: matrix.leg == 'direct'
+        shell: bash -l {0}
+        working-directory: tests/small_test_analysis
+        env:
+          # 2-core hosted runner / --workers 2 -> 1 thread each. Without caps,
+          # numpy/OpenBLAS sizes to the core count *per worker* and thrashes.
+          OMP_NUM_THREADS: 1
+          MKL_NUM_THREADS: 1
+          OPENBLAS_NUM_THREADS: 1
+          NUMEXPR_MAX_THREADS: 1
+        run: |
+          # `shell: bash -l {0}` does not imply -e, and the step's exit code is
+          # the last command's -- without this a failing preprocess is invisible.
+          set -e
+          conda activate brieflow_ci
+          mkdir -p "$PWD/tmp"
+          export TMPDIR="$PWD/tmp"
+          D=../../scripts/direct
+          python $D/run_preprocess_direct.py --config config/config.yml --workers 2
+          # --step all makes combine_after() return True for real, so the combine
+          # wiring is exercised by execution rather than by a stubbed predicate.
+          python $D/run_sbs_direct.py       --config config/config.yml --workers 2 --step all
+          python $D/run_phenotype_direct.py --config config/config.yml --workers 2 --step all
+          python $D/run_merge_direct.py     --config config/config.yml --workers 2 --step all
+
+      # Exit 0 is not a test: assert the artifacts exist and hold real data.
+      - name: Verify outputs (${{ matrix.leg }})
+        shell: bash -l {0}
+        working-directory: tests/small_test_analysis
+        run: |
+          conda activate brieflow_ci
+          python verify_outputs.py ${{ matrix.leg }}
+
+      # Run Pytest. Pinned to one leg: the suite is output-format agnostic, so
+      # running it three times is pure waste. -rs surfaces the skip reasons, so a
+      # machine-gated E2E test (scripts/direct/tests/test_postseg_e2e_smoke.py)
+      # reads as a documented skip in the run summary instead of as coverage.
       - name: Run pytest
+        if: matrix.leg == 'tiff'
         shell: bash -l {0}
         run: |
           conda activate brieflow_ci
