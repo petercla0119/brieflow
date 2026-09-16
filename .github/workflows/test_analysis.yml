@@ -100,9 +100,11 @@ jobs:
           export TMPDIR="$PWD/tmp"
           sh run_brieflow.sh
 
-      # Run Pytest
+      # Run Pytest. -rs surfaces skip reasons, so a machine-gated E2E test
+      # (scripts/direct/tests/test_postseg_e2e_smoke.py) reads as a documented
+      # skip in the run summary instead of as coverage.
       - name: Run pytest
         shell: bash -l {0}
         run: |
           conda activate brieflow_ci
-          pytest
+          pytest -rs
