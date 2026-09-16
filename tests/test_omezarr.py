@@ -39,7 +39,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from workflow.lib.shared.file_utils import get_filename
-from workflow.lib.shared.io import read_image, save_image, write_image_omezarr
+from workflow.lib.shared.image_io import read_image, save_image, write_image_omezarr
 
 # ===========================================================================
 # Section 1: Fixtures
