@@ -8,6 +8,11 @@ version = "1.5.0"
 description = "Package for processing data from optical poooled screens."
 readme = "README.md"
 license = { file = "LICENSE" }
+# iohub==0.3.0 already forces >=3.12, so nothing older can resolve. Declaring it
+# here attributes the constraint to brieflow itself -- installing into a 3.11 env
+# now reports "brieflow==1.5.0 depends on Python>=3.12" rather than surfacing as a
+# conflict against a transitive dependency.
+requires-python = ">=3.12"
 dependencies = [
   "numba==0.65.1",
   "snakemake==9.19.0",
@@ -57,6 +62,10 @@ dependencies = [
   "fsspec==2026.2.0",
   "iohub==0.3.0",
   "marimo==0.23.6",
+  # Imported directly by lib/shared/image_utils.py and lib/external/cp_emulator.py.
+  # It had only ever arrived transitively (via phate -> scprep), so a resolve that
+  # drops scprep leaves the SBS align step failing on ModuleNotFoundError.
+  "decorator==5.3.1",
 ]
 
 
