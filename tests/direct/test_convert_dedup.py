@@ -18,8 +18,13 @@ Run: python tests/direct/test_convert_dedup.py   (or under pytest, marked unit)
 
 import argparse
 import sys
-import types
 from pathlib import Path
+
+# tests/direct is a package, so its directory is not on sys.path under pytest;
+# add it so the shared stub helper imports both here and under bare
+# `python tests/direct/<file>.py` execution.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lib_stubs import stub_lib_modules  # noqa: E402
 
 import pandas as pd
 
@@ -31,13 +36,6 @@ except ImportError:  # allow bare `python tests/direct/test_convert_dedup.py`
 
     def _mark(f):
         return f
-
-
-def _stub(name, **attrs):
-    m = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(m, k, v)
-    sys.modules[name] = m
 
 
 def _out_path(loc, *a, **k):
@@ -57,49 +55,50 @@ def _out_path(loc, *a, **k):
 
 
 # --- stub heavy lib.* imports the runner does at module load ------------------
-_stub("lib")
-_stub("lib.preprocess")
-_stub("lib.shared")
-_stub(
-    "lib.preprocess.preprocess",
-    convert_to_array=lambda *a, **k: None,
-    extract_metadata=lambda *a, **k: None,
-    get_data_config=lambda *a, **k: {
-        "data_format": "nd2",
-        "image_data_organization": "tile",
-        "metadata_data_organization": "tile",
-        "channel_order_flip": False,
-        "n_z_planes": None,
-        "channel_order": None,
-    },
-)
-_stub(
-    "lib.preprocess.file_utils",
-    get_metadata_wildcard_combos=lambda s, m: pd.DataFrame(
-        columns=["plate", "well", "tile"]
-    ),
-    get_sample_fps=lambda df, **k: [
-        "r1.nd2",
-        "r2.nd2",
-    ],  # combined all-rounds file list
-)
-_stub(
-    "lib.shared.file_utils",
-    get_data_output_path=lambda *a, **k: "md.tsv",
-    get_image_output_path=_out_path,
-    validate_dtypes=lambda df: df,
-)
-_stub("lib.shared.illumination_correction", calculate_ic_field=lambda *a, **k: None)
-_stub("lib.shared.image_io", save_image=lambda *a, **k: None)
-_stub("lib.shared.parquet_io", write_parquet=lambda df, p: None)
-_stub(
-    "lib.shared.resource_monitor",
-    monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(),
-    set_benchmark_context=lambda *a, **k: None,
-)
+with stub_lib_modules() as _stub:
+    _stub("lib")
+    _stub("lib.preprocess")
+    _stub("lib.shared")
+    _stub(
+        "lib.preprocess.preprocess",
+        convert_to_array=lambda *a, **k: None,
+        extract_metadata=lambda *a, **k: None,
+        get_data_config=lambda *a, **k: {
+            "data_format": "nd2",
+            "image_data_organization": "tile",
+            "metadata_data_organization": "tile",
+            "channel_order_flip": False,
+            "n_z_planes": None,
+            "channel_order": None,
+        },
+    )
+    _stub(
+        "lib.preprocess.file_utils",
+        get_metadata_wildcard_combos=lambda s, m: pd.DataFrame(
+            columns=["plate", "well", "tile"]
+        ),
+        get_sample_fps=lambda df, **k: [
+            "r1.nd2",
+            "r2.nd2",
+        ],  # combined all-rounds file list
+    )
+    _stub(
+        "lib.shared.file_utils",
+        get_data_output_path=lambda *a, **k: "md.tsv",
+        get_image_output_path=_out_path,
+        validate_dtypes=lambda df: df,
+    )
+    _stub("lib.shared.illumination_correction", calculate_ic_field=lambda *a, **k: None)
+    _stub("lib.shared.image_io", save_image=lambda *a, **k: None)
+    _stub("lib.shared.parquet_io", write_parquet=lambda df, p: None)
+    _stub(
+        "lib.shared.resource_monitor",
+        monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(),
+        set_benchmark_context=lambda *a, **k: None,
+    )
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
-import run_preprocess_direct as rpd  # noqa: E402
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
+    import run_preprocess_direct as rpd  # noqa: E402
 
 
 def _run(image_type, combos_df, tmp_path):
