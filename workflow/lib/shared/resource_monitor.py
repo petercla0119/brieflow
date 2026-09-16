@@ -68,6 +68,10 @@ COLUMNS = [
     "mean_gpu_pct",
     "max_gpu_mem_mb",
     "n_samples",
+    # per-process GPU (segmentation steps only): summed over just this step's
+    # own process tree (root + pool workers), so a shared box isn't miscredited.
+    "max_proc_gpu_pct", "mean_proc_gpu_pct",
+    "max_proc_gpu_mem_mb", "mean_proc_gpu_mem_mb",
 ]
 
 # nvidia-smi path resolved once; None => no GPU tooling, GPU sampling skipped.
@@ -115,6 +119,42 @@ def _iso(t):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t))
 
 
+def _pmon_util_by_pid(out):
+    """Parse `nvidia-smi pmon -c 1` -> {pid: sm_util_pct}.
+    Columns: gpu pid type sm mem enc dec command. Idle rows (pid '-') and rows
+    whose sm is non-numeric ('-') are skipped. pmon's 'mem' col is a bandwidth
+    %, not MB -> memory in MB comes from _compute_apps_mem_by_pid instead."""
+    util = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        f = line.split()
+        if len(f) < 4 or f[1] == "-":
+            continue
+        try:
+            util[int(f[1])] = float(f[3])
+        except ValueError:
+            continue
+    return util
+
+
+def _compute_apps_mem_by_pid(out):
+    """Parse `nvidia-smi --query-compute-apps=pid,used_memory
+    --format=csv,noheader,nounits` -> {pid: used_mem_mb}. '[N/A]' rows skipped."""
+    mem = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pid_s, m_s = line.split(",")
+            mem[int(pid_s)] = float(m_s)
+        except ValueError:
+            continue
+    return mem
+
+
 class ResourceMonitor:
     """Sample a process tree's peak RSS/CPU until stopped, then append a row."""
 
@@ -127,12 +167,14 @@ class ResourceMonitor:
         stage=None,
         n_workers=None,
         plate=None,
+        proc_gpu=False,
     ):
         """Configure a monitor for one step without starting it.
 
         `pid` defaults to the current process and the whole tree beneath it is
         sampled, so pool workers are included. `stage`, `n_workers` and `plate`
         are recorded verbatim on the output row to make runs comparable.
+        `proc_gpu` opts in to per-process GPU attribution (segmentation steps).
         """
         self.step = step
         self.pid = pid or os.getpid()
@@ -173,6 +215,14 @@ class ResourceMonitor:
         self._gpu_samples = 0
         self.max_gpu_mem = 0.0  # peak total mem used across GPUs (MB)
         self._gpu_ok = _NVIDIA_SMI is not None
+        # per-process GPU attribution (opt-in via proc_gpu=; seg steps only).
+        # Separate _proc_gpu_ok so a pmon hiccup can't silence node-wide sampling.
+        self.max_proc_gpu = 0.0        # peak summed sm% across our tree's GPU procs
+        self._proc_gpu_sum = 0.0
+        self.max_proc_gpu_mem = 0.0    # peak summed framebuffer MB across our procs
+        self._proc_gpu_mem_sum = 0.0
+        self._proc_gpu_samples = 0
+        self._proc_gpu_ok = proc_gpu and (_NVIDIA_SMI is not None)
 
     # -- context manager -----------------------------------------------------
     def __enter__(self):
@@ -261,7 +311,9 @@ class ResourceMonitor:
     def _sample(self):
         rss = vms = cpu = 0.0
         n = 0
+        pids = set()
         for p in self._live_procs():
+            pids.add(p.pid)
             try:
                 mi = p.memory_info()
                 rss += mi.rss
@@ -280,6 +332,7 @@ class ResourceMonitor:
         self._cpu_sum += cpu
         self._samples += 1
         self._sample_gpu()
+        self._sample_proc_gpu(pids)
 
     def _sample_gpu(self):
         # One nvidia-smi call per tick (~2s) — negligible next to a GPU step.
@@ -321,6 +374,38 @@ class ResourceMonitor:
         self._gpu_sum += fleet_mean
         self._gpu_samples += 1
         self.max_gpu_mem = max(self.max_gpu_mem, mem_total)
+
+    def _sample_proc_gpu(self, pids):
+        # Per-process GPU attribution for THIS step's tree (root + pool workers).
+        # Two nvidia-smi calls per tick: pmon -> per-PID sm% util;
+        # query-compute-apps -> per-PID framebuffer MB. Summed over only our PIDs,
+        # so a shared GPU box never credits another job's load to this step.
+        # ponytail: node-wide sampling stays in _sample_gpu; this is additive.
+        if not self._proc_gpu_ok:
+            return
+        import subprocess
+        try:
+            pmon = subprocess.run(
+                [_NVIDIA_SMI, "pmon", "-c", "1"],
+                capture_output=True, text=True, timeout=5).stdout
+            apps = subprocess.run(
+                [_NVIDIA_SMI, "--query-compute-apps=pid,used_memory",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            self._proc_gpu_ok = False  # smi vanished/hung — stop trying
+            return
+        util = _pmon_util_by_pid(pmon)
+        mem = _compute_apps_mem_by_pid(apps)
+        # Empty compute-apps output = no GPU procs = our procs used 0 this tick;
+        # record it (don't skip) so the mean isn't biased toward busy ticks.
+        ours_util = sum(v for pid, v in util.items() if pid in pids)
+        ours_mem = sum(v for pid, v in mem.items() if pid in pids)
+        self.max_proc_gpu = max(self.max_proc_gpu, ours_util)
+        self._proc_gpu_sum += ours_util
+        self.max_proc_gpu_mem = max(self.max_proc_gpu_mem, ours_mem)
+        self._proc_gpu_mem_sum += ours_mem
+        self._proc_gpu_samples += 1
 
     def _prime_root_io(self):
         # Baseline the root process's disk counters at step start so I/O done
@@ -397,6 +482,10 @@ class ResourceMonitor:
             else 0.0,
             "max_gpu_mem_mb": round(self.max_gpu_mem, 1),
             "n_samples": self._samples,
+            "max_proc_gpu_pct": round(self.max_proc_gpu, 1),
+            "mean_proc_gpu_pct": round(self._proc_gpu_sum / self._proc_gpu_samples, 1) if self._proc_gpu_samples else 0.0,
+            "max_proc_gpu_mem_mb": round(self.max_proc_gpu_mem, 1),
+            "mean_proc_gpu_mem_mb": round(self._proc_gpu_mem_sum / self._proc_gpu_samples, 1) if self._proc_gpu_samples else 0.0,
         }
         header = "\t".join(COLUMNS)
         try:
@@ -424,11 +513,17 @@ class ResourceMonitor:
             if row["gpu_count"]
             else ""
         )
+        pgpu = (
+            f"proc_gpu={row['max_proc_gpu_pct']}% "
+            f"proc_gpu_mem={row['max_proc_gpu_mem_mb']}MB "
+            if self._proc_gpu_samples
+            else ""
+        )
         print(
             f"  [monitor] {self.step}: peak_rss={row['max_rss_mb']}MB "
             f"peak_cpu={row['max_cpu_pct']}% "
             f"read={row['read_mb']}MB write={row['write_mb']}MB "
-            f"{gpu}wall={row['wall_s']}s"
+            f"{gpu}{pgpu}wall={row['wall_s']}s"
         )
 
 
@@ -452,7 +547,8 @@ def set_benchmark_context(stage, root_fp, plate=None):
     os.environ["BRIEFLOW_PLATE"] = "" if plate is None else str(plate)
     os.environ.setdefault("BRIEFLOW_MACHINE_TYPE", _detect_machine_type())
     os.environ.setdefault(
-        "BRIEFLOW_BENCHMARK_DIR", str(Path(root_fp) / "benchmarks" / "direct")
+        "BRIEFLOW_BENCHMARK_DIR",
+        str(Path(root_fp).resolve() / "benchmarks" / "direct"),
     )
 
 
