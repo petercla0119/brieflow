@@ -23,14 +23,33 @@ def _fake_pos(n_channels):
 
 
 PHENO_META = [
-    {"name": "DAPI", "index": 0, "color": "0000FF",
-     "biological_annotation": {"marker": "DAPI", "full_label": "nucleus, DAPI"}},
-    {"name": "COXIV", "index": 1, "color": "00FF00",
-     "biological_annotation": {"marker": "pTDP43", "full_label": "TDP43 (phospho)"}},
-    {"name": "CENPA", "index": 2, "color": "FF0000",
-     "biological_annotation": {"marker": "PGRN", "full_label": "progranulin"}},
-    {"name": "WGA", "index": 3, "color": "FF00FF",
-     "biological_annotation": {"marker": "TDP43", "full_label": "cell membrane, WGA"}},
+    {
+        "name": "DAPI",
+        "index": 0,
+        "color": "0000FF",
+        "biological_annotation": {"marker": "DAPI", "full_label": "nucleus, DAPI"},
+    },
+    {
+        "name": "COXIV",
+        "index": 1,
+        "color": "00FF00",
+        "biological_annotation": {"marker": "pTDP43", "full_label": "TDP43 (phospho)"},
+    },
+    {
+        "name": "CENPA",
+        "index": 2,
+        "color": "FF0000",
+        "biological_annotation": {"marker": "PGRN", "full_label": "progranulin"},
+    },
+    {
+        "name": "WGA",
+        "index": 3,
+        "color": "FF00FF",
+        "biological_annotation": {
+            "marker": "TDP43",
+            "full_label": "cell membrane, WGA",
+        },
+    },
 ]
 
 FLAT_NAMES = ["DAPI", "COXIV", "CENPA", "WGA"]
@@ -67,9 +86,7 @@ def test_full_label_fallback_when_no_marker():
 
 def test_fallback_to_flat_names_without_metadata():
     # Current behavior preserved: no channels_metadata -> flat channel_names.
-    resolved = _resolve_channel_names_for_store(
-        _fake_pos(4), FLAT_NAMES, "aligned"
-    )
+    resolved = _resolve_channel_names_for_store(_fake_pos(4), FLAT_NAMES, "aligned")
     assert resolved == FLAT_NAMES
 
 
