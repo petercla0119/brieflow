@@ -11,4 +11,6 @@ standard_deviation = compute_standard_deviation(
 )
 
 # Save the standard deviation data
-save_image(standard_deviation, snakemake.output[0])
+save_image(
+    standard_deviation, snakemake.output[0], channel_names=["standard_deviation"]
+)

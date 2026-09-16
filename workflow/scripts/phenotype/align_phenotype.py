@@ -62,4 +62,6 @@ else:
     print("STEP 2: Skipping automatic alignment")
 
 # Save the aligned/unaligned data
-save_image(aligned_data, snakemake.output[0])
+save_image(
+    aligned_data, snakemake.output[0], channel_names=snakemake.params.channel_names
+)
