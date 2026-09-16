@@ -25,11 +25,15 @@ def _make_fov(plate_path: Path, row: str, col: str, tile: str):
     """Create a minimal FOV zarr.json so discover_plate_structure finds it."""
     fov_dir = plate_path / row / col / tile
     fov_dir.mkdir(parents=True, exist_ok=True)
-    (fov_dir / "zarr.json").write_text(json.dumps({
-        "zarr_format": 3,
-        "node_type": "group",
-        "attributes": {},
-    }))
+    (fov_dir / "zarr.json").write_text(
+        json.dumps(
+            {
+                "zarr_format": 3,
+                "node_type": "group",
+                "attributes": {},
+            }
+        )
+    )
 
 
 def _read_json(p: Path) -> dict:
@@ -233,11 +237,15 @@ class TestWriteHcsMetadata:
         # Create a fake label store inside the field
         label_dir = plate / "A" / "1" / "0" / "labels" / "nuclei"
         label_dir.mkdir(parents=True)
-        (label_dir / "zarr.json").write_text(json.dumps({
-            "zarr_format": 3,
-            "node_type": "group",
-            "attributes": {"ome": {"image-label": {"version": "0.5"}}},
-        }))
+        (label_dir / "zarr.json").write_text(
+            json.dumps(
+                {
+                    "zarr_format": 3,
+                    "node_type": "group",
+                    "attributes": {"ome": {"image-label": {"version": "0.5"}}},
+                }
+            )
+        )
 
         write_hcs_metadata(plate)
 
@@ -277,9 +285,13 @@ def _find_output_dir() -> Path:
     if canonical.exists():
         return canonical
     candidates = sorted(
-        [p for p in _TEST_ANALYSIS.iterdir()
-         if p.is_dir() and p.name.startswith("brieflow_output")],
-        key=lambda p: p.stat().st_mtime, reverse=True,
+        [
+            p
+            for p in _TEST_ANALYSIS.iterdir()
+            if p.is_dir() and p.name.startswith("brieflow_output")
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
     for p in candidates:
         if (p / "sbs").exists() or (p / "preprocess").exists():
@@ -300,9 +312,13 @@ def _assert_valid_hcs_plate(store_dir: Path):
     assert "plate" in ome, f"Missing plate metadata in {plate_json}"
     plate = ome["plate"]
     assert "rows" in plate and len(plate["rows"]) > 0, f"No rows in {plate_json}"
-    assert "columns" in plate and len(plate["columns"]) > 0, f"No columns in {plate_json}"
+    assert "columns" in plate and len(plate["columns"]) > 0, (
+        f"No columns in {plate_json}"
+    )
     assert "wells" in plate and len(plate["wells"]) > 0, f"No wells in {plate_json}"
-    assert "field_count" in plate and plate["field_count"] > 0, f"Bad field_count in {plate_json}"
+    assert "field_count" in plate and plate["field_count"] > 0, (
+        f"Bad field_count in {plate_json}"
+    )
 
     for well_entry in plate["wells"]:
         well_path = store_dir / well_entry["path"]
