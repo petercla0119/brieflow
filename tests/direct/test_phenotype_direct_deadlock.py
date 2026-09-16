@@ -40,15 +40,13 @@ import queue as _queue
 import signal
 import sys
 import threading
-import types
 from pathlib import Path
 
-
-def _stub(name, **attrs):
-    m = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(m, k, v)
-    sys.modules[name] = m
+# tests/direct is a package, so its directory is not on sys.path under pytest;
+# add it so the shared stub helper imports both here and under bare
+# `python tests/direct/<file>.py` execution.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lib_stubs import stub_lib_modules  # noqa: E402
 
 
 # Stub the heavy lib.shared.* imports the runner does at module load so this test
@@ -56,39 +54,40 @@ def _stub(name, **attrs):
 # This block re-runs on every spawn/fork re-import of this module -- exactly what
 # makes the PRIMARY test valid: a fresh import never carries the parent's runtime
 # mutation.
-_stub("lib")
-_stub("lib.shared")
-_stub(
-    "lib.shared.file_utils",
-    get_data_output_path=lambda *a, **k: "",
-    get_image_output_path=lambda *a, **k: "",
-    validate_dtypes=lambda df: df,
-)
-_stub(
-    "lib.shared.image_io",
-    read_image=lambda *a, **k: None,
-    save_image=lambda *a, **k: None,
-)
-_stub("lib.shared.illumination_correction", apply_ic_field=lambda *a, **k: None)
-_stub(
-    "lib.shared.parquet_io",
-    write_parquet=lambda df, p: df.to_parquet(p),
-    read_parquets=lambda *a, **k: None,
-)
-_stub(
-    "lib.shared.rule_utils",
-    get_alignment_params=lambda *a, **k: {},
-    get_segmentation_params=lambda *a, **k: {},
-)
+with stub_lib_modules() as _stub:
+    _stub("lib")
+    _stub("lib.shared")
+    _stub(
+        "lib.shared.file_utils",
+        get_data_output_path=lambda *a, **k: "",
+        get_image_output_path=lambda *a, **k: "",
+        validate_dtypes=lambda df: df,
+    )
+    _stub(
+        "lib.shared.image_io",
+        read_image=lambda *a, **k: None,
+        save_image=lambda *a, **k: None,
+    )
+    _stub("lib.shared.illumination_correction", apply_ic_field=lambda *a, **k: None)
+    _stub(
+        "lib.shared.parquet_io",
+        write_parquet=lambda df, p: df.to_parquet(p),
+        read_parquets=lambda *a, **k: None,
+    )
+    _stub(
+        "lib.shared.rule_utils",
+        get_alignment_params=lambda *a, **k: {},
+        get_segmentation_params=lambda *a, **k: {},
+    )
 
-_stub(
-    "lib.shared.resource_monitor",
-    monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(),
-    set_benchmark_context=lambda *a, **k: None,
-)  # ponytail: nullcontext stub; real context manager is only needed when the step actually runs
+    _stub(
+        "lib.shared.resource_monitor",
+        monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(),
+        set_benchmark_context=lambda *a, **k: None,
+    )  # ponytail: nullcontext stub; real context manager is only needed when the step actually runs
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
-import run_phenotype_direct as rpd  # noqa: E402
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))
+    import run_phenotype_direct as rpd  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
