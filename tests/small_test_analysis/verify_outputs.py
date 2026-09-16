@@ -13,8 +13,10 @@ Usage:
 
 ponytail: a flat glob list, not a per-rule manifest. It checks the well-level
 outputs each stage must produce; per-tile outputs are deliberately not listed
-because the small test ships empty FOVs that legitimately yield 0 rows. Grow
-the list if a stage regresses without tripping it.
+because the small test ships empty FOVs that legitimately yield 0 rows. Any new
+pattern must therefore name an artifact only the *well-level* step writes --
+several per-tile outputs share a directory with their per-well counterpart.
+Grow the list if a stage regresses without tripping it.
 """
 
 import argparse
@@ -30,7 +32,14 @@ COMMON = [
     "sbs/parquets/**/*sbs_info.parquet",
     "sbs/parquets/**/*cells.parquet",
     "phenotype/parquets/**/*phenotype_info.parquet",
-    "phenotype/parquets/**/*phenotype_cp.parquet",
+    # phenotype_cp_min, NOT phenotype_cp: extract_phenotype writes its *per-tile*
+    # phenotype_cp parquets into this same directory, and the small test ships
+    # phenotype/empty_images for tile 2 of both wells, so those tiles legitimately
+    # have 0 rows. `*phenotype_cp.parquet` sweeps them in and reads as a failure.
+    # phenotype_cp_min is written only per well, by merge_phenotype (Snakemake) and
+    # run_phenotype_direct (direct) -- and it is the artifact the known
+    # prints-COMPLETE-writes-nothing combine bug produces zero of.
+    "phenotype/parquets/**/*phenotype_cp_min.parquet",
     "merge/parquets/**/*merge_final.parquet",
 ]
 
