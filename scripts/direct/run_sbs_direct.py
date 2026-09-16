@@ -107,6 +107,20 @@ def _zarr_tile_ok(p):
     return _zarr_node_has_chunks(zero if zero.exists() else p)
 
 
+def combine_after(step, partial_tiles):
+    """Whether this invocation should run the combine steps (12-16).
+
+    post-seg folds combine in so one CPU post-segmentation call also produces the
+    per-well parquets that merge needs -- combine is CPU-only, so this does not
+    affect the pre-seg(CPU)/segment(GPU)/post-seg(CPU) split.
+
+    Suppressed for a partial tile selection (--max-tiles/--tile-start/--tile-end):
+    combining a shard writes a truncated well parquet. Shard the post-seg, then
+    call --step combine once every shard has landed.
+    """
+    return step in ("combine", "all") or (step == "post-seg" and not partial_tiles)
+
+
 def out_exists(path):
     p = Path(path)
     if (
@@ -631,7 +645,10 @@ def process_sbs(config, args):
     run_pre_seg = args.step in ("tiles", "pre-seg", "all")
     run_segment = args.step in ("tiles", "segment", "all")
     run_post_seg = args.step in ("tiles", "post-seg", "all")
-    run_combine = args.step in ("combine", "all")
+    partial_tiles = any(
+        v is not None for v in (args.max_tiles, args.tile_start, args.tile_end)
+    )
+    run_combine = combine_after(args.step, partial_tiles)
 
     # ponytail: gate tile_combos to empty for phases that don't run
     if not (run_pre_seg or run_segment or run_post_seg):
@@ -1173,7 +1190,7 @@ def main():
         "--step",
         choices=["tiles", "pre-seg", "segment", "post-seg", "combine", "all"],
         default="all",
-        help="tiles=per-tile steps 1-11, pre-seg=steps 1-6 (CPU), segment=step 7 (GPU), post-seg=steps 8-11 (CPU), combine=merge+eval 12-16, all=everything",
+        help="tiles=per-tile steps 1-11, pre-seg=steps 1-6 (CPU), segment=step 7 (GPU), post-seg=steps 8-11 + combine (CPU; combine skipped for a partial tile selection), combine=merge+eval 12-16, all=everything",
     )
     p.add_argument(
         "--align-workers",
