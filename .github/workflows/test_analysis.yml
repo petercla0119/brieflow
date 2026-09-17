@@ -94,27 +94,13 @@ jobs:
           conda activate brieflow_ci
           echo "CONDA_DEFAULT_ENV=brieflow_ci" >> $GITHUB_ENV
 
-      # Run setup for small test analysis.
-      # Retried: the matrix makes three concurrent 1.31 GB pulls of the same
-      # Zenodo record per run, and Zenodo answered one of them with a 504, which
-      # killed all three legs before any work started. The setup script raises
-      # before opening the file on an HTTP error and truncates on reopen, so a
-      # retry cannot leave a half-written zip behind.
-      # ponytail: a loop, not actions/cache -- caching 1.31 GB to dodge a
-      # transient is more machinery than the problem needs. Cache it if Zenodo
-      # becomes a recurring red rather than a one-off.
+      # Run setup for small test analysis
       - name: Run small test setup
         shell: bash -l {0}
         working-directory: tests/small_test_analysis
         run: |
           conda activate brieflow_ci
-          for attempt in 1 2 3; do
-            python small_test_analysis_setup.py && exit 0
-            echo "::warning::small test data download failed (attempt $attempt/3); retrying in 60s"
-            sleep 60
-          done
-          echo "::error::small test data download failed after 3 attempts"
-          exit 1
+          python small_test_analysis_setup.py
 
       # Run Brieflow
       - name: Run Brieflow (${{ matrix.leg }})
