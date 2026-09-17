@@ -138,7 +138,9 @@ jobs:
           # wiring is exercised by execution rather than by a stubbed predicate.
           python $D/run_sbs_direct.py       --config config/config.yml --workers 2 --step all
           python $D/run_phenotype_direct.py --config config/config.yml --workers 2 --step all
-          python $D/run_merge_direct.py     --config config/config.yml --workers 2 --step all
+          # THROWAWAY BREAK TEST (#54 AC): run_merge_direct.py deliberately removed.
+          # The other three runners still exit 0, so the leg must go red at the
+          # *verify* step on merge_final -- not at the run step.
 
       # Exit 0 is not a test: assert the artifacts exist and hold real data.
       - name: Verify outputs (${{ matrix.leg }})
