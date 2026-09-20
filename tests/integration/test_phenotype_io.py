@@ -49,7 +49,22 @@ def test_extract_phenotype_output_is_parquet():
         f"Stale per-tile phenotype_cp.tsv files still present: {stale_tsvs}"
     )
 
-    sample = read_parquet(per_tile_parquets[0])
+    # The small test ships phenotype/empty_images FOVs, whose per-tile parquets are
+    # legitimately empty -- just the synthesized wildcard columns, no `label`. Sample a
+    # tile that actually has rows instead of whichever one glob returned first.
+    sample = next(
+        (
+            df
+            for df in (read_parquet(p) for p in sorted(per_tile_parquets))
+            if len(df) > 0
+        ),
+        None,
+    )
+    assert sample is not None, (
+        f"All {len(per_tile_parquets)} per-tile phenotype parquets are empty; "
+        "expected at least one tile with segmented objects."
+    )
+
     assert "label" in sample.columns
     assert any(col.endswith("_min") for col in sample.columns), (
         "Expected at least one *_min intensity column in per-tile parquet"
