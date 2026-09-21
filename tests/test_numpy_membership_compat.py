@@ -45,7 +45,9 @@ def test_find_cells_removes_boundary_labels(monkeypatch):
         lambda distance, nuclei, mask: watershed_labels.copy(),
     )
 
-    result = find_cells(np.zeros_like(watershed_labels), np.ones_like(watershed_labels, dtype=bool))
+    result = find_cells(
+        np.zeros_like(watershed_labels), np.ones_like(watershed_labels, dtype=bool)
+    )
 
     expected = np.array(
         [
