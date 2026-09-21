@@ -43,4 +43,8 @@ corrected_image_data = apply_ic_field(
 )
 
 # Save corrected image data
-save_image(corrected_image_data, snakemake.output[0])
+save_image(
+    corrected_image_data,
+    snakemake.output[0],
+    channel_names=snakemake.params.channel_names,
+)

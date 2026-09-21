@@ -9,6 +9,8 @@ rule apply_ic_field_phenotype:
         ancient(PREPROCESS_OUTPUTS["calculate_ic_phenotype"]),
     output:
         PHENOTYPE_OUTPUTS_MAPPED["apply_ic_field_phenotype"],
+    params:
+        channel_names=config.get("phenotype", {}).get("channel_names"),
     group:
         "phenotype_tile"
     script:
@@ -23,6 +25,7 @@ rule align_phenotype:
         PHENOTYPE_OUTPUTS_MAPPED["align_phenotype"],
     params:
         config=lambda wildcards: get_alignment_params(wildcards, config),
+        channel_names=config.get("phenotype", {}).get("channel_names"),
     group:
         "phenotype_tile"
     script:

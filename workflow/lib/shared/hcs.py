@@ -181,7 +181,10 @@ def patch_store_metadata_with_iohub(
 
         # --- channel names ---
         resolved = _resolve_channel_names_for_store(
-            pos, config_channel_names, store_type
+            pos,
+            config_channel_names,
+            store_type,
+            channels_metadata=channels_metadata if modality == "phenotype" else None,
         )
         _rename_channels(pos, resolved)
 
@@ -573,8 +576,29 @@ def _load_pixel_size_map(
 _SINGLE_CHANNEL_STORES = {"peaks", "standard_deviation"}
 
 
+def _marker_labels_by_index(channels_metadata: list[dict] | None) -> dict[int, str]:
+    """Map channel index → biological marker (or full_label) label.
+
+    Prefers ``biological_annotation.marker`` (concise, what the picker shows),
+    falling back to ``full_label``. Channels without a marker are omitted so
+    the caller keeps the flat config name for them.
+    """
+    labels: dict[int, str] = {}
+    for ch in channels_metadata or []:
+        if not isinstance(ch, dict) or not isinstance(ch.get("index"), int):
+            continue
+        bio = ch.get("biological_annotation") or {}
+        label = bio.get("marker") or bio.get("full_label")
+        if label:
+            labels[ch["index"]] = label
+    return labels
+
+
 def _resolve_channel_names_for_store(
-    pos, config_channel_names: list[str] | None, store_type: str
+    pos,
+    config_channel_names: list[str] | None,
+    store_type: str,
+    channels_metadata: list[dict] | None = None,
 ) -> list[str]:
     """Determine the real channel names for a position in a given store.
 
@@ -582,6 +606,11 @@ def _resolve_channel_names_for_store(
       - Single-channel stores (peaks, standard_deviation) → [store_type]
       - Multi-channel stores: if config_channel_names count matches the
         position's channel count, use config names; otherwise keep current.
+      - When *channels_metadata* carries a biological marker (or full_label)
+        for a channel index, that label overrides the flat config name so the
+        channel picker surfaces marker names (e.g. pTDP43). See issue #10.
+        Callers pass channels_metadata only for modalities that should gain
+        marker labels (phenotype), leaving SBS base names untouched.
     """
     try:
         n_channels = len(list(pos.channel_names))
@@ -592,7 +621,11 @@ def _resolve_channel_names_for_store(
         return [store_type]
 
     if config_channel_names and len(config_channel_names) == n_channels:
-        return list(config_channel_names)
+        names = list(config_channel_names)
+        marker_by_index = _marker_labels_by_index(channels_metadata)
+        if marker_by_index:
+            names = [marker_by_index.get(i, names[i]) for i in range(len(names))]
+        return names
 
     # Fallback: keep whatever names the store already has.
     # iohub may return ints when OMERO metadata is missing — always stringify.

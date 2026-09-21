@@ -1,6 +1,7 @@
 """Tests for Phase 1 (barcode library cache) and Phase 2 (error correction dedup)."""
 
 import sys
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,8 +23,13 @@ from lib.sbs.call_cells import (
 )
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
-BARCODE_LIB_FP = (
-    "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+# Real screen data, not in the repo. Defaults to the broad-cpu location; override
+# with BRIEFLOW_BARCODE_LIB to run these anywhere else. Mirrors tests/sbs/conftest.py.
+BARCODE_LIB_FP = Path(
+    os.environ.get(
+        "BRIEFLOW_BARCODE_LIB",
+        "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv",
+    )
 )
 
 _all_tiles = ["P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100"]
@@ -175,6 +181,11 @@ def test_zero_reads_produces_empty_output():
 
 @pytest.fixture(scope="module")
 def barcode_lib_df():
+    # Skip rather than error when the library is absent -- same contract as
+    # INTEGRATION_TILES above. Without this, CI runners error on a path that
+    # can only exist on broad-cpu.
+    if not BARCODE_LIB_FP.exists():
+        pytest.skip(f"barcode library not available at {BARCODE_LIB_FP}")
     return pd.read_csv(BARCODE_LIB_FP, sep="\t")
 
 
