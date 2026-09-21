@@ -246,7 +246,7 @@ def find_cells(nuclei, mask, remove_boundary_cells=True):
         # Identify cells touching the boundary
         cut = np.concatenate([cells[0, :], cells[-1, :], cells[:, 0], cells[:, -1]])
         # Set labels of boundary-touching cells to 0
-        cells.flat[np.in1d(cells, np.unique(cut))] = 0
+        cells[np.isin(cells, np.unique(cut))] = 0
 
     return cells
 
@@ -338,7 +338,7 @@ def filter_by_region(labeled, score, threshold, intensity_image=None, relabel=Tr
         cut = [r.label for r, s in zip(regions, scores) if s < t]
 
     # Remove identified regions from the labeled image
-    labeled.flat[np.in1d(labeled.flat[:], cut)] = 0
+    labeled.flat[np.isin(labeled.flat[:], cut)] = 0
 
     if relabel:
         # Relabel the regions sequentially
