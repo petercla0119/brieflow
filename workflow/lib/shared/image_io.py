@@ -220,9 +220,34 @@ def save_image(
             is_label=is_label,
             compression=compression,
         )
+        if is_label:
+            _register_label_in_group_index(out)
         return
 
     raise ValueError(f"Unsupported output path: {out}")
+
+
+def _register_label_in_group_index(label_path: Path) -> None:
+    """Refresh the parent ``labels/`` group index after writing a label store.
+
+    OME-NGFF readers discover segmentations through ``labels/zarr.json``. Writing
+    it here rather than only in the HCS finalize step keeps it correct for the
+    direct runners, which never finalize (brieflow#32).
+
+    Args:
+        label_path: Path of the label store just written, e.g.
+            ``aligned_1.zarr/A/1/0/labels/nuclei``.
+    """
+    labels_dir = label_path.parent
+    if labels_dir.name != "labels":
+        return
+
+    # ponytail: rescan the dir instead of read-modify-writing the index — same
+    # writer as finalize, so byte-identical JSON, and no stale entries to prune.
+    # Deferred import: hcs imports image_io at module level.
+    from lib.shared.hcs import _maybe_write_labels_metadata
+
+    _maybe_write_labels_metadata(labels_dir.parent)
 
 
 # ---------------------------------------------------------------------------
