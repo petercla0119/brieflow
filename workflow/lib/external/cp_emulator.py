@@ -242,15 +242,31 @@ intensity_features_multichannel = {
     "center_mass": lambda r: catch_runtime(lambda r: r.weighted_local_centroid)(
         r
     ).flatten(),  # this property is not cached
-    "max_location": lambda r: np.array(
-        np.unravel_index(
-            np.argmax(
-                r.intensity_image.reshape(-1, *r.intensity_image.shape[2:]), axis=0
-            ),
-            (r.image).shape,
-        )
-    ).flatten(),
+    "max_location": lambda r: multichannel_max_location(r),
 }
+
+
+def multichannel_max_location(region):
+    image = np.asarray(region.intensity_image)
+
+    if image.ndim == 2:
+        image = image[..., None]
+    elif image.ndim != 3:
+        raise ValueError(
+            f"Expected a 2-D or 3-D intensity image, got shape {image.shape}"
+        )
+
+    spatial_shape = image.shape[:2]
+    n_channels = image.shape[2]
+    locations = []
+
+    for channel in range(n_channels):
+        channel_image = image[..., channel]
+        masked_image = np.where(region.image, channel_image, -np.inf)
+        flat_index = int(np.argmax(masked_image))
+        locations.append(np.unravel_index(flat_index, spatial_shape))
+
+    return np.asarray(locations, dtype=int).reshape(-1)
 
 intensity_columns = {
     "edge_intensity_feature_0": "int_edge",

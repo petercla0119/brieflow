@@ -1,4 +1,5 @@
 from tifffile import imread
+import numpy as np
 
 # load inputs
 data_phenotype = imread(snakemake.input[0])
@@ -34,6 +35,10 @@ else:
     from lib.phenotype.extract_phenotype_cp_multichannel import (
         extract_phenotype_cp_multichannel,
     )
+
+    if data_phenotype.ndim == 3 and data_phenotype.shape[0] <= 20:
+        # Convert C,Y,X to Y,X,C when the first axis is the channel axis.
+        data_phenotype = np.moveaxis(data_phenotype, 0, -1)
 
     # extract phenotype CellProfiler information
     phenotype_cp = extract_phenotype_cp_multichannel(

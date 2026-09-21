@@ -41,6 +41,23 @@ def extract_phenotype_cp_multichannel(
 
     Updated version with proper column ordering.
     """
+    # If loaded as (channels, rows, columns), normalize to (rows, columns, channels)
+    if (
+        data_phenotype.ndim == 3
+        and data_phenotype.shape[0] <= 20
+        and data_phenotype.shape[-1] > 20
+    ):
+        data_phenotype = np.moveaxis(data_phenotype, 0, -1)
+
+    if data_phenotype.ndim == 3:
+        channel_count = data_phenotype.shape[-1]
+        select_channels = lambda data, channels: data[..., channels]
+        select_channel = lambda data, channel: data[..., channel]
+    else:
+        channel_count = data_phenotype.shape[-3]
+        select_channels = lambda data, channels: data[..., channels, :, :]
+        select_channel = lambda data, channel: data[..., channel, :, :]
+
     # If nuclei or cells are empty, return an empty DataFrame
     if np.sum(nuclei) == 0 or np.sum(cells) == 0:
         return pd.DataFrame(columns=["well", "tile"])
@@ -48,19 +65,19 @@ def extract_phenotype_cp_multichannel(
     # Check if all channels should be used
     if nucleus_channels == "all":
         try:
-            nucleus_channels = list(range(data_phenotype.shape[-3]))
+            nucleus_channels = list(range(channel_count))
         except:
             nucleus_channels = [0]
 
     if cell_channels == "all":
         try:
-            cell_channels = list(range(data_phenotype.shape[-3]))
+            cell_channels = list(range(channel_count))
         except:
             cell_channels = [0]
 
     if cytoplasm_channels == "all":
         try:
-            cytoplasm_channels = list(range(data_phenotype.shape[-3]))
+            cytoplasm_channels = list(range(channel_count))
         except:
             cytoplasm_channels = [0]
 
@@ -109,7 +126,7 @@ def extract_phenotype_cp_multichannel(
     # Extract nucleus features
     dfs.append(
         extract_features(
-            data_phenotype[..., nucleus_channels, :, :],
+            select_channels(data_phenotype, nucleus_channels),
             nuclei,
             dict(),
             features,
@@ -123,7 +140,7 @@ def extract_phenotype_cp_multichannel(
     # Extract cell features
     dfs.append(
         extract_features(
-            data_phenotype[..., cell_channels, :, :],
+            select_channels(data_phenotype, cell_channels),
             cells,
             dict(),
             features,
@@ -139,7 +156,7 @@ def extract_phenotype_cp_multichannel(
         cytoplasmic_columns = make_column_map(cytoplasm_channels)
         dfs.append(
             extract_features(
-                data_phenotype[..., cytoplasm_channels, :, :],
+                select_channels(data_phenotype, cytoplasm_channels),
                 cytoplasms,
                 dict(),
                 features,
@@ -153,7 +170,7 @@ def extract_phenotype_cp_multichannel(
     # Extract foci features if foci channel is provided
     if foci_channel is not None:
         foci = find_foci(
-            data_phenotype[..., foci_channel, :, :], remove_border_foci=True
+            select_channel(data_phenotype, foci_channel), remove_border_foci=True
         )
         dfs.append(
             extract_features_bare(foci, cells, features=foci_features)
@@ -338,7 +355,7 @@ def remove_border(labels, mask, dilate=5):
 
     # Remove the identified labels from the labeled image
     labels = labels.copy()
-    labels.flat[np.isin(labels, remove)] = 0
+    labels[np.isin(labels, remove)] = 0
 
     return labels
 

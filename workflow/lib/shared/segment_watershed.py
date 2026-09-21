@@ -246,7 +246,7 @@ def find_cells(nuclei, mask, remove_boundary_cells=True):
         # Identify cells touching the boundary
         cut = np.concatenate([cells[0, :], cells[-1, :], cells[:, 0], cells[:, -1]])
         # Set labels of boundary-touching cells to 0
-        cells.flat[np.isin(cells, np.unique(cut))] = 0
+        cells[np.isin(cells, np.unique(cut))] = 0
 
     return cells.astype(np.uint16)
 

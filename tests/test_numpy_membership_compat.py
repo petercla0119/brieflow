@@ -1,7 +1,14 @@
 import numpy as np
+from skimage.measure import regionprops
 
+from lib.external.cp_emulator import multichannel_max_location
 from lib.phenotype.extract_phenotype_cp_multichannel import remove_border
 from lib.shared.segment_watershed import filter_by_region, find_cells
+
+
+def make_test_region(image, mask):
+    labels = np.where(mask, 1, 0).astype(int)
+    return regionprops(labels, intensity_image=image)[0]
 
 
 def test_remove_border_clears_selected_labels():
@@ -60,3 +67,15 @@ def test_find_cells_removes_boundary_labels(monkeypatch):
         dtype=np.uint16,
     )
     np.testing.assert_array_equal(result, expected)
+
+
+def test_multichannel_max_location():
+    image = np.zeros((20, 30, 3), dtype=np.uint16)
+    image[5, 7, 0] = 100
+    image[12, 18, 1] = 200
+    image[2, 25, 2] = 300
+
+    region = make_test_region(image, np.ones((20, 30), dtype=bool))
+    result = multichannel_max_location(region)
+
+    assert result.tolist() == [5, 7, 12, 18, 2, 25]
