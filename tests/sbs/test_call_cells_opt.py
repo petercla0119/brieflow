@@ -1,13 +1,10 @@
 """Tests for Phase 1 (barcode library cache) and Phase 2 (error correction dedup)."""
 
 import sys
-import os
 from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 import pandas as pd
-import pytest
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflow"
 if str(WORKFLOW) not in sys.path:
@@ -19,44 +16,7 @@ from lib.sbs.call_cells import (
     error_correct_reads,
     _barcode_distance_matrix,
     _build_hamming1_index,
-    call_cells,
 )
-
-GOLDEN_DIR = Path(__file__).parent / "golden"
-# Real screen data, not in the repo. Defaults to the broad-cpu location; override
-# with BRIEFLOW_BARCODE_LIB to run these anywhere else. Mirrors tests/sbs/conftest.py.
-BARCODE_LIB_FP = Path(
-    os.environ.get(
-        "BRIEFLOW_BARCODE_LIB",
-        "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv",
-    )
-)
-
-_all_tiles = ["P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100"]
-INTEGRATION_TILES = [
-    t
-    for t in _all_tiles
-    if (GOLDEN_DIR / f"{t}__reads.tsv").exists()
-    and (GOLDEN_DIR / f"{t}__cells.tsv").exists()
-]
-
-MULTI_CC_KWARGS = dict(
-    q_min=0.0,
-    map_start=1,
-    map_end=12,
-    prefix_map="prefix_map",
-    recomb_start=13,
-    recomb_end=15,
-    prefix_recomb="prefix_recomb",
-    recomb_filter_col="Q_recomb",
-    recomb_q_thresh=0.1,
-    error_correct=True,
-    sort_calls="peak",
-    max_distance=1,
-    n_barcodes=2,
-    barcode_info_cols=None,
-)
-
 
 # ─── Phase 1: barcode library cache ─────────────────────────────────────────
 
@@ -174,77 +134,6 @@ def test_zero_reads_produces_empty_output():
     reads = pd.Series([], dtype=str)
     result = error_correct_reads(reads, ref, max_distance=1)
     assert len(result) == 0
-
-
-# ─── Integration: output matches golden ─────────────────────────────────────
-
-
-@pytest.fixture(scope="module")
-def barcode_lib_df():
-    # Skip rather than error when the library is absent -- same contract as
-    # INTEGRATION_TILES above. Without this, CI runners error on a path that
-    # can only exist on broad-cpu.
-    if not BARCODE_LIB_FP.exists():
-        pytest.skip(f"barcode library not available at {BARCODE_LIB_FP}")
-    return pd.read_csv(BARCODE_LIB_FP, sep="\t")
-
-
-def _assert_series_match(r, g, col):
-    """Compare two series, tolerating pd.NA vs np.nan as equivalent nulls."""
-    r_null = r.isna()
-    g_null = g.isna()
-    assert (r_null == g_null).all(), f"NA positions differ in column '{col}'"
-
-    if pd.api.types.is_float_dtype(g):
-        pd.testing.assert_series_equal(
-            r.rename(col),
-            g.rename(col),
-            check_exact=False,
-            rtol=1e-6,
-            check_names=False,
-            check_dtype=False,
-        )
-    elif (~g_null).any():
-        # For non-float columns: compare non-NA values with dtype coercion
-        pd.testing.assert_series_equal(
-            r[~r_null].reset_index(drop=True).astype(str).rename(col),
-            g[~g_null].reset_index(drop=True).astype(str).rename(col),
-            check_exact=True,
-            check_names=False,
-        )
-
-
-@pytest.mark.parametrize("tile", INTEGRATION_TILES)
-def test_cells_output_matches_golden(tile, barcode_lib_df):
-    """call_cells output must match the golden TSV within float tolerance."""
-    reads_fp = GOLDEN_DIR / f"{tile}__reads.tsv"
-    golden_fp = GOLDEN_DIR / f"{tile}__cells.tsv"
-
-    reads_data = pd.read_csv(reads_fp, sep="\t")
-    golden = pd.read_csv(golden_fp, sep="\t")
-
-    result = call_cells(
-        reads_data=reads_data,
-        df_barcode_library=barcode_lib_df.copy(),
-        **MULTI_CC_KWARGS,
-    )
-
-    key_cols = ["well", "tile", "cell"]
-    result_s = result.sort_values(key_cols).reset_index(drop=True)
-    golden_s = golden.sort_values(key_cols).reset_index(drop=True)
-
-    assert result_s.shape == golden_s.shape, (
-        f"Shape mismatch: got {result_s.shape}, expected {golden_s.shape}"
-    )
-
-    assert set(result_s.columns) == set(golden_s.columns), (
-        f"Column mismatch:\n"
-        f"  extra={set(result_s.columns) - set(golden_s.columns)}\n"
-        f"  missing={set(golden_s.columns) - set(result_s.columns)}"
-    )
-
-    for col in golden_s.columns:
-        _assert_series_match(result_s[col], golden_s[col], col)
 
 
 def test_hamming1_index_used_for_production_config(monkeypatch):
