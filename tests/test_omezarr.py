@@ -305,6 +305,24 @@ class TestIORoundtrip:
         assert "image-label" in attrs
         assert "color" not in attrs["omero"]["channels"][0]
 
+    def test_save_omezarr_label_writes_group_index(self, tmp_path, dummy_2d_uint16):
+        """Writing labels into an HCS field emits labels/zarr.json (brieflow#32)."""
+        field = tmp_path / "aligned_1.zarr" / "A" / "1" / "0"
+        label_img = (dummy_2d_uint16 > 1000).astype(np.uint32)
+
+        save_image(label_img, field / "labels" / "nuclei", is_label=True)
+        index = field / "labels" / "zarr.json"
+        assert json.loads(index.read_text())["attributes"]["ome"]["labels"] == [
+            "nuclei"
+        ]
+
+        # Second label accumulates rather than clobbering the first.
+        save_image(label_img, field / "labels" / "cells", is_label=True)
+        assert json.loads(index.read_text())["attributes"]["ome"]["labels"] == [
+            "cells",
+            "nuclei",
+        ]
+
     def test_read_omezarr_multiscale(self, tmp_path, dummy_3d_uint16):
         """read_image returns full-resolution level from a multiscale store."""
         zp = tmp_path / "ms.zarr"
