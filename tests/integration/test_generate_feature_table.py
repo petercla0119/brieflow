@@ -35,7 +35,11 @@ def test_construct_table_stable():
     out_dir = _resolve_output_dir()
     agg_dir = out_dir / "aggregate"
 
-    construct_files = list(agg_dir.glob("**/*construct*.tsv"))
+    # Target the construct feature table specifically. A `*construct*.tsv` glob also
+    # matches all_construct_bootstrap_results / construct_data / construct_features_arr,
+    # which carry different schemas, and glob order is filesystem-dependent -- so the
+    # loose pattern asserted against whichever file the OS happened to return first.
+    construct_files = sorted(agg_dir.glob("**/*features_constructs.tsv"))
     if not construct_files:
         pytest.skip("No construct TSV outputs found; run the aggregate module first.")
 

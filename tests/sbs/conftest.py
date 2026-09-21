@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -9,8 +10,13 @@ import pandas as pd
 import pytest
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
+# Real screen data, not in the repo. Defaults to the broad-cpu location; override
+# with BRIEFLOW_BARCODE_LIB to run these anywhere else.
 BARCODE_LIB_FP = Path(
-    "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
+    os.environ.get(
+        "BRIEFLOW_BARCODE_LIB",
+        "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv",
+    )
 )
 
 # Only use tiles where both golden files exist
@@ -43,4 +49,10 @@ MULTI_CC_KWARGS = dict(
 
 @pytest.fixture(scope="session")
 def barcode_lib():
+    # Skip rather than error when the library is absent -- same contract as
+    # INTEGRATION_TILES above, which already degrades to an empty list off
+    # broad-cpu. Without this, CI runners collect these tests and fail them on
+    # a FileNotFoundError for a path that can never exist there.
+    if not BARCODE_LIB_FP.exists():
+        pytest.skip(f"barcode library not available at {BARCODE_LIB_FP}")
     return pd.read_csv(BARCODE_LIB_FP, sep="\t")
