@@ -11,11 +11,27 @@ actually re-runs. Asserts the whole post-seg chain
 completes and produces sane phenotype parquet.
 
 This is a REGRESSION GUARD for breakages seen in this codebase's history, not a
-correctness oracle (that is test_identify_cytoplasm_cellpose.py). It skips
-cleanly when the plate-4 masks / real config / preprocess metadata fixtures are
-absent, so it never hard-fails in an environment without fixtures.
+correctness oracle (that is test_identify_cytoplasm_cellpose.py).
 
-Run:  pytest -q scripts/direct/tests/test_postseg_e2e_smoke.py
+WHERE TO RUN: the `broad-cpu` GCP VM, and nowhere else. It reads real plate-4
+phenotype masks from
+
+    /mnt/work/broad-analysis/broad-tdp-gws/analysis/brieflow_output/
+
+which exist only on that machine -- they are far too large to ship to CI, so a
+GitHub hosted runner will always SKIP this file. That skip is a documented
+machine requirement, not coverage; CI runs pytest with `-rs` so the reason is
+printed in the run summary rather than silently absorbed. Nothing in the
+`direct` CI leg runs this test (pytest is pinned to the `tiff` leg), so it is
+never collected-and-errored there either.
+
+Run on broad-cpu:
+
+    cd <worktree> && pytest -q -rs scripts/direct/tests/test_postseg_e2e_smoke.py
+
+Override the fixture locations with the ANALYSIS (analysis root), WT (worktree
+root) and THREADS env vars if your checkout or data live elsewhere.
+
 Uses 2 wells x 1 tile to also exercise the per-well combine/merge path. Fast
 (~40s) once identify_cytoplasm_cellpose is vectorized; slower on the pre-merge
 per-label loop.
@@ -57,12 +73,20 @@ STORE = f"aligned_{PLATE}.zarr"
 
 REQUIRED_MIN_COLS = {"label", "plate", "well", "tile", "cell_i", "cell_j"}
 
+# Every skip below names the missing fixture AND the machine that has it, so a
+# skip in a CI summary is legible as "wrong machine", not as a passing test.
+WHERE = (
+    "this test is broad-cpu-only: it needs real plate-4 phenotype masks under "
+    f"{ANALYSIS}, which are not present on a GitHub hosted runner. "
+    "Run it on broad-cpu, or point ANALYSIS= at an analysis root that has them."
+)
+
 
 def _read_image_or_skip():
     try:
         from lib.shared.image_io import read_image
     except Exception as e:  # noqa: BLE001
-        pytest.skip(f"cannot import lib.shared.image_io ({e})")
+        pytest.skip(f"cannot import lib.shared.image_io ({e}) -- {WHERE}")
     return read_image
 
 
@@ -97,15 +121,16 @@ def _discover_well_tiles(n_wells=2):
 def postseg_run(tmp_path_factory):
     # Skip cleanly if any required fixture is missing.
     if not RUNNER.exists():
-        pytest.skip(f"runner not found: {RUNNER}")
+        pytest.skip(f"runner not found: {RUNNER} -- set WT= to the worktree root")
     if not REAL_CONFIG.exists():
-        pytest.skip(f"real config not found: {REAL_CONFIG}")
+        pytest.skip(f"real config not found: {REAL_CONFIG} -- {WHERE}")
     if not REAL_META.exists():
-        pytest.skip(f"preprocess metadata not found: {REAL_META}")
+        pytest.skip(f"preprocess metadata not found: {REAL_META} -- {WHERE}")
     picks = _discover_well_tiles(2)
     if not picks:
         pytest.skip(
-            f"no plate-{PLATE} nuclei+cells label tiles under {REAL_PHEN / STORE}"
+            f"no plate-{PLATE} nuclei+cells label tiles under {REAL_PHEN / STORE} "
+            f"-- {WHERE}"
         )
 
     import yaml

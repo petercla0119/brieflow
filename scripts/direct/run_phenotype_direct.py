@@ -147,9 +147,7 @@ def preprocess_phen_ic_path(pp_fp, fmt, plate, well):
 _MP = multiprocessing.get_context("spawn")
 
 
-def run_parallel(
-    tasks, fn, workers, label, initializer=None, initargs=(), proc_gpu=False
-):
+def run_parallel(tasks, fn, workers, label, initializer=None, initargs=()):
     n = len(tasks)
     if n == 0:
         print(f"  {label}: nothing to do")
@@ -158,7 +156,7 @@ def run_parallel(
     t0 = time.time()
     print(f"\n  {label}: {n} tasks, {workers} workers")
     with (
-        monitor_step(label, n_workers=workers, proc_gpu=proc_gpu),
+        monitor_step(label, n_workers=workers),
         ProcessPoolExecutor(
             max_workers=workers,
             mp_context=_MP,
@@ -691,7 +689,6 @@ def process_phenotype(config, args):
         "Segment phenotype",
         initializer=seg_init[0],
         initargs=seg_init[1],
-        proc_gpu=True,
     )
 
     # --- Step 4: Identify cytoplasm ---
