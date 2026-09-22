@@ -155,12 +155,17 @@ jobs:
           conda activate brieflow_ci
           python verify_outputs.py ${{ matrix.leg }}
 
-      # Run Pytest. Pinned to one leg: the suite is output-format agnostic, so
-      # running it three times is pure waste. -rs surfaces the skip reasons, so a
-      # machine-gated E2E test (scripts/direct/tests/test_postseg_e2e_smoke.py)
-      # reads as a documented skip in the run summary instead of as coverage.
+      # Run Pytest. Most of the suite is output-format agnostic, but the zarr /
+      # OME-Zarr assertions in tests/test_omezarr.py and tests/test_hcs_metadata.py
+      # need a zarr store on disk -- on a tiff-only leg they find nothing and skip,
+      # which reads as coverage while asserting nothing (#70). So: tiff + zarr, and
+      # deliberately not direct -- that leg writes zarr too, but adding it buys a
+      # third run of the ~200 leg-independent tests for no new assertions.
+      # -rs surfaces the skip reasons, so a machine-gated E2E test
+      # (scripts/direct/tests/test_postseg_e2e_smoke.py) reads as a documented skip
+      # in the run summary instead of as coverage.
       - name: Run pytest
-        if: matrix.leg == 'tiff'
+        if: matrix.leg == 'tiff' || matrix.leg == 'zarr'
         shell: bash -l {0}
         run: |
           conda activate brieflow_ci
