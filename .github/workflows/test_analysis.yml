@@ -21,7 +21,11 @@ concurrency:
 
 jobs:
   test-analysis:
-    runs-on: ubuntu-latest
+    # Pinned deliberately: ubuntu-latest migrates to Ubuntu 26 on 2026-10-19, which
+    # would change the OS under a conda env + compiled scientific stack without
+    # warning. ruff-check-format.yml stays on ubuntu-latest as the canary -- it is a
+    # ~1 min job with little to break, so it surfaces the migration early and cheaply.
+    runs-on: ubuntu-24.04
 
     # tiff/zarr run the Snakemake pipeline in each output format; direct runs the
     # four direct runners, which is the path every real plate run takes and which
@@ -34,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Free disk space (max safe)
         run: |
