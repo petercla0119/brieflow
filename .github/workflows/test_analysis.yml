@@ -155,18 +155,29 @@ jobs:
           conda activate brieflow_ci
           python verify_outputs.py ${{ matrix.leg }}
 
-      # Run Pytest. Most of the suite is output-format agnostic, but the zarr /
-      # OME-Zarr assertions in tests/test_omezarr.py and tests/test_hcs_metadata.py
-      # need a zarr store on disk -- on a tiff-only leg they find nothing and skip,
-      # which reads as coverage while asserting nothing (#70). So: tiff + zarr, and
-      # deliberately not direct -- that leg writes zarr too, but adding it buys a
-      # third run of the ~200 leg-independent tests for no new assertions.
+      # Run Pytest on every leg. It was gated to tiff on the grounds that the
+      # suite is output-format agnostic, but the HCS/zarr store assertions in
+      # tests/test_hcs_metadata.py are not: on a tiff-only leg they find no zarr
+      # store and skip, so they had never once executed in CI (#70). The zarr leg
+      # produces exactly those stores. The direct leg runs last because it is the
+      # path every real plate run takes on broad-cpu, so it is the one that most
+      # needs the suite behind it -- the ~200 leg-independent tests re-running
+      # there is the price, and at ~29 s against legs of 24-75 min it is noise.
+      #
+      # BRIEFLOW_REQUIRE_ZARR turns "no zarr store found" from a skip into a
+      # failure, so the #70 gap cannot silently reopen. Scoped to the zarr leg
+      # ONLY: tiff and direct both run config/config.yml, which is the TIFF
+      # config writing to brieflow_output/ (see verify_outputs.py LEGS), so they
+      # have no zarr store by design and setting it there would be a guaranteed
+      # false failure.
+      #
       # -rs surfaces the skip reasons, so a machine-gated E2E test
       # (scripts/direct/tests/test_postseg_e2e_smoke.py) reads as a documented skip
       # in the run summary instead of as coverage.
       - name: Run pytest
-        if: matrix.leg == 'tiff' || matrix.leg == 'zarr'
         shell: bash -l {0}
+        env:
+          BRIEFLOW_REQUIRE_ZARR: ${{ matrix.leg == 'zarr' && '1' || '0' }}
         run: |
           conda activate brieflow_ci
           pytest -rs
