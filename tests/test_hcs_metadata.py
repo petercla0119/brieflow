@@ -1,6 +1,7 @@
 """Unit tests for HCS plate metadata functions in workflow/lib/shared/hcs.py."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -280,6 +281,23 @@ _PREPROCESS_STORE_TYPES = [
 ]
 
 
+def _absent(reason: str):
+    """Skip -- unless the CI leg promised zarr output, in which case fail.
+
+    These checks can only run against a run that actually wrote zarr stores, so
+    on the tiff leg (and the direct leg, which also runs the TIFF config) a
+    missing store is "not applicable" and skipping is correct. On the zarr leg
+    it is a regression: the store should be there. Without this, the gap in #70
+    can silently reopen -- pytest and the zarr artifacts drifting onto different
+    legs again would read as green skips rather than as the failure it is.
+
+    Set BRIEFLOW_REQUIRE_ZARR=1 only on a leg whose output root holds zarr.
+    """
+    if os.environ.get("BRIEFLOW_REQUIRE_ZARR") == "1":
+        pytest.fail(f"BRIEFLOW_REQUIRE_ZARR=1 but {reason}")
+    pytest.skip(reason)
+
+
 def _find_output_dir() -> Path:
     canonical = _TEST_ANALYSIS / "brieflow_output"
     if canonical.exists():
@@ -296,7 +314,7 @@ def _find_output_dir() -> Path:
     for p in candidates:
         if (p / "sbs").exists() or (p / "preprocess").exists():
             return p
-    pytest.skip("Brieflow output directory not found.")
+    _absent("Brieflow output directory not found.")
 
 
 def _assert_valid_hcs_plate(store_dir: Path):
@@ -349,7 +367,7 @@ class TestSbsStoresHaveHcsMetadata:
         self.root = _find_output_dir()
         self.sbs_dir = self.root / "sbs"
         if not self.sbs_dir.exists():
-            pytest.skip("SBS output directory not found.")
+            _absent("SBS output directory not found.")
 
     def test_sbs_stores_have_plate_metadata(self):
         found_any = False
@@ -358,7 +376,7 @@ class TestSbsStoresHaveHcsMetadata:
                 found_any = True
                 _assert_valid_hcs_plate(store_dir)
         if not found_any:
-            pytest.skip("No SBS zarr stores found.")
+            _absent("No SBS zarr stores found.")
 
 
 @pytest.mark.integration
@@ -370,7 +388,7 @@ class TestPhenotypeStoresHaveHcsMetadata:
         self.root = _find_output_dir()
         self.pheno_dir = self.root / "phenotype"
         if not self.pheno_dir.exists():
-            pytest.skip("Phenotype output directory not found.")
+            _absent("Phenotype output directory not found.")
 
     def test_phenotype_stores_have_plate_metadata(self):
         found_any = False
@@ -379,7 +397,7 @@ class TestPhenotypeStoresHaveHcsMetadata:
                 found_any = True
                 _assert_valid_hcs_plate(store_dir)
         if not found_any:
-            pytest.skip("No phenotype zarr stores found.")
+            _absent("No phenotype zarr stores found.")
 
 
 @pytest.mark.integration
@@ -391,28 +409,28 @@ class TestPreprocessStoresHaveHcsMetadata:
         self.root = _find_output_dir()
         self.preprocess_dir = self.root / "preprocess"
         if not self.preprocess_dir.exists():
-            pytest.skip("Preprocess output directory not found.")
+            _absent("Preprocess output directory not found.")
 
     def test_preprocess_sbs_stores_have_plate_metadata(self):
         sbs_dir = self.preprocess_dir / "sbs"
         if not sbs_dir.exists():
-            pytest.skip("Preprocess SBS output not found.")
+            _absent("Preprocess SBS output not found.")
         found_any = False
         for store_type in _PREPROCESS_STORE_TYPES:
             for store_dir in sorted(sbs_dir.glob(f"{store_type}_*.zarr")):
                 found_any = True
                 _assert_valid_hcs_plate(store_dir)
         if not found_any:
-            pytest.skip("No preprocess SBS zarr stores found.")
+            _absent("No preprocess SBS zarr stores found.")
 
     def test_preprocess_phenotype_stores_have_plate_metadata(self):
         pheno_dir = self.preprocess_dir / "phenotype"
         if not pheno_dir.exists():
-            pytest.skip("Preprocess phenotype output not found.")
+            _absent("Preprocess phenotype output not found.")
         found_any = False
         for store_type in _PREPROCESS_STORE_TYPES:
             for store_dir in sorted(pheno_dir.glob(f"{store_type}_*.zarr")):
                 found_any = True
                 _assert_valid_hcs_plate(store_dir)
         if not found_any:
-            pytest.skip("No preprocess phenotype zarr stores found.")
+            _absent("No preprocess phenotype zarr stores found.")
