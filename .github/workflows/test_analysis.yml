@@ -102,8 +102,11 @@ jobs:
           conda activate brieflow_ci
           python small_test_analysis_setup.py
 
-      # Run Brieflow
-      - name: Run Brieflow (${{ matrix.leg }})
+      # Run Brieflow through Snakemake. Named "via Snakemake" because the step
+      # name interpolates the leg: on the direct leg it would read "Run Brieflow
+      # (direct)" and then skip itself, which looks like the direct leg never ran.
+      # The direct leg's real work is the "Run direct runners" step below.
+      - name: Run Brieflow via Snakemake (${{ matrix.leg }})
         if: matrix.leg != 'direct'
         shell: bash -l {0}
         working-directory: tests/small_test_analysis
