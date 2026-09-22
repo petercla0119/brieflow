@@ -81,12 +81,25 @@ def test_every_leg_verifies_its_outputs():
     assert "${{ matrix.leg }}" in verify["run"]
 
 
-def test_pytest_runs_once_and_reports_skips():
+def test_pytest_runs_on_every_leg_and_reports_skips():
+    # Was pinned to tiff, which has no zarr store -- so the zarr assertions in
+    # tests/test_hcs_metadata.py could only ever skip (#70). Ungated now: the
+    # zarr leg supplies the stores, and the direct leg is the path real plate
+    # runs take, so both need the suite behind them.
     pytest_step = step("pytest -rs")
-    assert pytest_step["if"] == "matrix.leg == 'tiff'"
+    assert "if" not in pytest_step, "pytest must run on every leg"
     # -rs keeps the broad-cpu-only post-seg E2E skip legible in the run summary
     # instead of letting it read as coverage (#55).
     assert "-rs" in pytest_step["run"]
+
+
+def test_require_zarr_is_set_on_the_zarr_leg_only():
+    # BRIEFLOW_REQUIRE_ZARR=1 turns "no zarr store found" from a skip into a
+    # failure, so the #70 gap cannot silently reopen. It must stay scoped to the
+    # zarr leg: tiff and direct both run config/config.yml (TIFF output), so
+    # setting it there would be a guaranteed false failure.
+    env = step("pytest -rs")["env"]
+    assert env["BRIEFLOW_REQUIRE_ZARR"] == "${{ matrix.leg == 'zarr' && '1' || '0' }}"
 
 
 def test_concurrency_group_is_per_run_not_per_leg():
