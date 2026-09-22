@@ -65,3 +65,30 @@ renderable_plates = [
     if Path(p).exists() and "preprocess" not in Path(p).parts
 ]
 compute_and_inject_omero_windows(renderable_plates)
+
+# ---------------------------------------------------------------------------
+# THROWAWAY -- DO NOT MERGE. Adversarial check for #70 acceptance criterion 4.
+#
+# Deliberately corrupts the zarr write path: zero out plate-level field_count
+# after all real metadata is written, so _assert_valid_hcs_plate's
+# `field_count > 0` assertion fails. Runs last so nothing downstream repairs it.
+#
+# Chosen because it breaks only the *pipeline-written* stores, leaving the
+# zarr hierarchy structurally intact. So `Verify outputs (zarr)` still passes
+# and the leg must go red at `Run pytest` -- failing earlier would prove
+# nothing about the tests. The unit tests in tests/test_hcs_metadata.py call
+# write_hcs_metadata() directly and are unaffected, so the only failures
+# should be the four HCS assertions that #70 is about.
+# ---------------------------------------------------------------------------
+import json  # noqa: E402
+
+for _p in plate_zarr_dirs:
+    _pj = Path(_p) / "zarr.json"
+    if not _pj.exists():
+        continue
+    _meta = json.loads(_pj.read_text())
+    _plate = _meta.get("attributes", {}).get("ome", {}).get("plate")
+    if _plate is not None:
+        _plate["field_count"] = 0
+        _pj.write_text(json.dumps(_meta))
+        print(f"[THROWAWAY] zeroed field_count in {_pj}")
