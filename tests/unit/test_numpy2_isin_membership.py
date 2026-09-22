@@ -50,9 +50,14 @@ def test_naive_swap_keeping_flat_is_wrong():
     On a non-square 2-D array the shape-preserving mask cannot index `.flat`,
     so this is a hard error rather than a silent miswrite. Pinning it means a
     future 'cleanup' that reintroduces `.flat` fails loudly here.
+
+    The exception *type* is numpy-version dependent -- 2.0.2 raises ValueError
+    ("boolean index array should have 1 dimension"), 2.4 raises IndexError
+    ("too many indices for flat iterator"). Only "raises loudly" is the
+    contract; pinning either type alone breaks on the other numpy.
     """
     x = np.arange(12).reshape(3, 4)
-    with pytest.raises(IndexError):
+    with pytest.raises((IndexError, ValueError)):
         x.flat[np.isin(x, [2, 5])] = 0
 
 
