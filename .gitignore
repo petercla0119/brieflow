@@ -15,6 +15,11 @@ tests/small_test_analysis/brieflow_output/
 tests/small_test_analysis/brieflow_output_zarr/
 tests/small_test_analysis/small_test_data/
 
+# resource-monitor benchmark output — run data, never source (resource_monitor.py
+# writes ./benchmarks/direct/direct_benchmarks.tsv when BRIEFLOW_BENCHMARK_DIR is unset,
+# so any pytest or direct-runner invocation from the repo root drops rows here)
+benchmarks/
+
 # classifier dills — only dummy_classifier.dill is tracked; rebuild script and other models stay local
 tests/small_test_analysis/config/*.dill
 !tests/small_test_analysis/config/dummy_classifier.dill
