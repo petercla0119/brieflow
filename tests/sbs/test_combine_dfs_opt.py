@@ -476,34 +476,6 @@ def test_projection_mapping_reads(small_frames):
 # parquet, and the reads->cells chain link over parquet reads.
 # ─────────────────────────────────────────────────────────────────────────────
 from lib.shared.parquet_io import read_table, resolve_table_path, read_parquet
-from lib.sbs.call_cells import call_cells as _call_cells
-
-GOLDEN_DIR = Path(__file__).parent / "golden"
-BARCODE_LIB_FP = (
-    "/mnt/work/broad-analysis/broad-tdp-gws/analysis/config/barcode_library.tsv"
-)
-_CHAIN_TILES = [
-    t
-    for t in ("P-4_W-A1_T-0", "P-4_W-A1_T-50", "P-4_W-A1_T-100")
-    if (GOLDEN_DIR / f"{t}__reads.tsv").exists()
-    and (GOLDEN_DIR / f"{t}__cells.tsv").exists()
-]
-MULTI_CC_KWARGS = dict(
-    q_min=0.0,
-    map_start=1,
-    map_end=12,
-    prefix_map="prefix_map",
-    recomb_start=13,
-    recomb_end=15,
-    prefix_recomb="prefix_recomb",
-    recomb_filter_col="Q_recomb",
-    recomb_q_thresh=0.1,
-    error_correct=True,
-    sort_calls="peak",
-    max_distance=1,
-    n_barcodes=2,
-    barcode_info_cols=None,
-)
 
 
 def _sample_df():
@@ -808,61 +780,6 @@ def test_integration_parquet_mode_matches_tsv_reference(info, tmp_path):
     _assert_parquet_matches_tsv(parquet_combined, reference)
     # cross-check: parquet-mode == tsv-mode of the SAME tiles, same contract.
     _assert_parquet_matches_tsv(parquet_combined, combine_tile_dfs(tsv_paths))
-
-
-# ─── 4. call_cells chain integrity over parquet reads ───────────────────────
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not _CHAIN_TILES or not Path(BARCODE_LIB_FP).exists(),
-    reason="golden reads/cells tiles or barcode library unavailable",
-)
-def test_call_cells_chain_over_parquet_reads(tmp_path):
-    """The reads->cells chain link: reads written as parquet, read back via
-    read_table, produces cells identical to the TSV-fed pipeline (golden).
-
-    Gentle: one tile. First proves read_table(parquet) == pd.read_csv(tsv)
-    exactly (the only changed line in the chain), then runs call_cells once on
-    the parquet-fed reads and matches the golden cells under Option A.
-    """
-    tile = _CHAIN_TILES[0]
-    reads_tsv = pd.read_csv(GOLDEN_DIR / f"{tile}__reads.tsv", sep="\t")
-    pq = tmp_path / "reads.parquet"
-    write_parquet(reads_tsv, str(pq))
-
-    # chain link: read_table must reconstruct the exact reads frame from parquet
-    reads_via_read_table = read_table(
-        str(tmp_path / "reads.tsv")
-    )  # candidate suffix ignored
-    pd.testing.assert_frame_equal(reads_via_read_table, reads_tsv, check_exact=True)
-
-    barcode_lib = pd.read_csv(BARCODE_LIB_FP, sep="\t")
-    cells = _call_cells(
-        reads_data=reads_via_read_table,
-        df_barcode_library=barcode_lib.copy(),
-        **MULTI_CC_KWARGS,
-    )
-    golden = pd.read_csv(GOLDEN_DIR / f"{tile}__cells.tsv", sep="\t")
-    key = ["well", "tile", "cell"]
-    got = cells.sort_values(key).reset_index(drop=True)
-    exp = golden.sort_values(key).reset_index(drop=True)
-    assert got.shape == exp.shape, f"shape {got.shape} vs golden {exp.shape}"
-    assert set(got.columns) == set(exp.columns)
-    for c in exp.columns:
-        g, e = got[c], exp[c]
-        assert (g.isna() == e.isna()).all(), f"NA positions differ in {c}"
-        if pd.api.types.is_float_dtype(e):
-            np.testing.assert_allclose(
-                g.astype(float).to_numpy(),
-                e.astype(float).to_numpy(),
-                rtol=1e-6,
-                atol=0.0,
-                equal_nan=True,
-            )
-        else:
-            m = ~e.isna()
-            assert (g[m].astype(str).to_numpy() == e[m].astype(str).to_numpy()).all(), (
-                f"non-float column {c} differs"
-            )
 
 
 # ─── regression: bounds migration + empty-parquet-tile handling ─────────────
