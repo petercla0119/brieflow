@@ -95,6 +95,7 @@ with stub_lib_modules() as _stub:
         "lib.shared.resource_monitor",
         monitor_step=lambda *a, **k: __import__("contextlib").nullcontext(),
         set_benchmark_context=lambda *a, **k: None,
+        plates_from_combos=lambda *a, **k: "",
     )
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "direct"))

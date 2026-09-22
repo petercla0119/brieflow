@@ -48,7 +48,11 @@ from lib.shared.rule_utils import (
     get_segmentation_params,
     get_spot_detection_params,
 )
-from lib.shared.resource_monitor import monitor_step, set_benchmark_context
+from lib.shared.resource_monitor import (
+    monitor_step,
+    set_benchmark_context,
+    plates_from_combos,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1210,7 +1214,12 @@ def main():
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
-    set_benchmark_context("sbs", config["all"]["root_fp"], plate=args.plate_filter)
+    set_benchmark_context(
+        "sbs",
+        config["all"]["root_fp"],
+        plate=args.plate_filter
+        or plates_from_combos(config.get("preprocess", {}).get("sbs_combo_fp")),
+    )
     if args.gpu:
         config.setdefault("sbs", {})["gpu"] = True
     fmt = config.get("all", {}).get("image_format", "tiff")

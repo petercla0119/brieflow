@@ -440,16 +440,46 @@ def monitor_step(step, **kw):
     return ResourceMonitor(step, **kw)
 
 
+def plates_from_combos(*combo_fps):
+    """Return the plates listed across one or more combo TSVs, as "4,5".
+
+    Used to tag benchmark rows on a run that spans several plates, where there
+    is no --plate-filter to name one. Missing or unreadable files are skipped
+    rather than raised on: a blank plate tag is a cosmetic loss, and benchmark
+    bookkeeping must never be able to fail a pipeline run.
+    """
+    import pandas as pd  # local: this module stays import-light for workers
+
+    plates = set()
+    for fp in combo_fps:
+        if not fp:
+            continue
+        try:
+            col = pd.read_csv(fp, sep="\t", usecols=["plate"])["plate"]
+        except Exception:
+            continue
+        plates.update(str(v) for v in col.dropna().unique())
+    return ",".join(sorted(plates, key=lambda x: (len(x), x)))
+
+
 def set_benchmark_context(stage, root_fp, plate=None):
     """Point per-step benchmarks at <root_fp>/benchmarks/direct and tag rows.
 
     Call once at the top of a direct runner's main(). Honors a pre-set
     BRIEFLOW_BENCHMARK_DIR env var so the location can still be overridden.
-    ``plate`` tags every row with the plate this run processes ('' if the run
-    spans all plates). The GCP machine type is detected once and cached here.
+    ``plate`` tags every row with the plate(s) this run processes; pass a
+    single plate, or an iterable / comma-joined string for a multi-plate run
+    (see plates_from_combos). '' only when genuinely unknown. The GCP machine
+    type is detected once and cached here.
     """
+    if plate is None:
+        tag = ""
+    elif isinstance(plate, (list, tuple, set)):
+        tag = ",".join(sorted((str(x) for x in plate), key=lambda x: (len(x), x)))
+    else:
+        tag = str(plate)
     os.environ["BRIEFLOW_STAGE"] = stage
-    os.environ["BRIEFLOW_PLATE"] = "" if plate is None else str(plate)
+    os.environ["BRIEFLOW_PLATE"] = tag
     os.environ.setdefault("BRIEFLOW_MACHINE_TYPE", _detect_machine_type())
     os.environ.setdefault(
         "BRIEFLOW_BENCHMARK_DIR", str(Path(root_fp) / "benchmarks" / "direct")

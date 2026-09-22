@@ -38,7 +38,11 @@ from lib.shared.file_utils import (
 from lib.shared.illumination_correction import calculate_ic_field
 from lib.shared.image_io import save_image
 from lib.shared.parquet_io import write_parquet
-from lib.shared.resource_monitor import monitor_step, set_benchmark_context
+from lib.shared.resource_monitor import (
+    monitor_step,
+    set_benchmark_context,
+    plates_from_combos,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -633,8 +637,12 @@ def main():
     args = p.parse_args()
 
     config = yaml.safe_load(open(args.config))
+    _pp = config.get("preprocess", {})
     set_benchmark_context(
-        "preprocess", config["all"]["root_fp"], plate=args.plate_filter
+        "preprocess",
+        config["all"]["root_fp"],
+        plate=args.plate_filter
+        or plates_from_combos(_pp.get("sbs_combo_fp"), _pp.get("phenotype_combo_fp")),
     )
     img_fmt = config.get("all", {}).get("image_format", "tiff")
 
