@@ -566,6 +566,49 @@ def _call_cells_one(task):
         return "err", f"{tag}: {e}"
 
 
+def _annotate_reads_one(task):
+    reads_path, output_path, cc_params = task
+    tag = Path(output_path).stem
+    if out_exists(output_path):
+        return "skip", tag
+    try:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        from lib.sbs.call_cells import annotate_reads, load_barcode_library
+
+        reads = read_table(reads_path)
+        barcode_lib = load_barcode_library(cc_params["df_barcode_library_fp"])
+        if cc_params.get("barcode_type", "simple") == "multi":
+            annotated = annotate_reads(
+                reads_data=reads,
+                df_barcode_library=barcode_lib,
+                q_min=cc_params["q_min"],
+                map_start=cc_params["map_start"],
+                map_end=cc_params["map_end"],
+                prefix_map=cc_params["prefix_map"],
+                recomb_start=cc_params["recomb_start"],
+                recomb_end=cc_params["recomb_end"],
+                prefix_recomb=cc_params["prefix_recomb"],
+                recomb_filter_col=cc_params["recomb_filter_col"],
+                recomb_q_thresh=cc_params["recomb_q_thresh"],
+                error_correct=cc_params["error_correct"],
+                max_distance=cc_params["max_distance"],
+            )
+        else:
+            annotated = annotate_reads(
+                reads_data=reads,
+                df_barcode_library=barcode_lib,
+                q_min=cc_params["q_min"],
+                barcode_col=cc_params.get("barcode_col", "sgRNA"),
+                prefix_col=cc_params.get("prefix_col"),
+                error_correct=cc_params["error_correct"],
+                max_distance=cc_params["max_distance"],
+            )
+        write_parquet(annotated, output_path)
+        return "ok", tag
+    except Exception as e:
+        return "err", f"{tag}: {e}"
+
+
 def _extract_sbs_info_one(task):
     nuclei_path, output_path, wc = task
     tag = f"T{wc['tile']}"
@@ -814,6 +857,17 @@ def process_sbs(config, args):
         tasks.append((reads_p, out, cc_params))
     errs += run_parallel(tasks, _call_cells_one, w, "Call cells")
 
+    # --- Step 10b: Annotate reads (opt-in: sbs.annotate_reads) ---
+    annotate_flag = sbs_cfg.get("annotate_reads", False)
+    if annotate_flag:
+        tasks = []
+        for _, r in post_seg_tc.iterrows():
+            p, we, ti = r["plate"], r["well"], r["tile"]
+            reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
+            out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads_annotated", "parquet")
+            tasks.append((reads_p, out, cc_params))
+        errs += run_parallel(tasks, _annotate_reads_one, w, "Annotate reads")
+
     # --- Step 11: Extract SBS info ---
     tasks = []
     for _, r in post_seg_tc.iterrows():
@@ -837,7 +891,10 @@ def process_sbs(config, args):
     # --- Steps 12-14: Combine per well ---
     with monitor_step("Combine SBS"):
         print(f"\n  Combine per well...")
-        for info_type in ["reads", "cells", "sbs_info"]:
+        info_types = ["reads", "cells", "sbs_info"]
+        if annotate_flag:
+            info_types.append("reads_annotated")
+        for info_type in info_types:
             for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
                 out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
                 input_paths = [

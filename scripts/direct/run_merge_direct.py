@@ -334,19 +334,9 @@ def step_format_merge(cfg, paths, force):
     sbs_cells["mapped_single_gene"] = sbs_cells.apply(
         identify_single_gene_mappings, axis=1
     )
-    sbs_cols = ["plate", "well", "tile", "cell", "mapped_single_gene"]
-    prefixes = (
-        "cell_barcode_",
-        "gene_symbol_",
-        "gene_id_",
-        "no_recomb_",
-        "Q_min_",
-        "Q_recomb_",
-        "cell_barcode_peak_",
-        "cell_barcode_count_",
-    )
-    sbs_cols += [c for c in sbs_cells.columns if c.startswith(prefixes)]
-    sbs_cols = [c for c in sbs_cols if c in sbs_cells.columns]
+    from lib.merge.format_merge import select_sbs_merge_cols
+
+    sbs_cols = select_sbs_merge_cols(sbs_cells)
     mf = mf.merge(
         sbs_cells[sbs_cols].rename({"tile": "site", "cell": "cell_1"}, axis=1),
         how="left",

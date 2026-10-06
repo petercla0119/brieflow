@@ -7,6 +7,7 @@ from lib.merge.format_merge import (
     identify_single_gene_mappings,
     calculate_channel_mins,
     attach_global_pixel_coords,
+    select_sbs_merge_cols,
 )
 
 # Load data for formatting merge data
@@ -30,24 +31,8 @@ merge_formatted = merge_formatted.pipe(
 sbs_cells["mapped_single_gene"] = sbs_cells.apply(
     lambda x: identify_single_gene_mappings(x), axis=1
 )
-# Merge cell information from sbs — dynamically select per-barcode columns
-sbs_merge_cols = ["plate", "well", "tile", "cell", "mapped_single_gene"]
-for col in sbs_cells.columns:
-    if any(
-        col.startswith(prefix)
-        for prefix in [
-            "cell_barcode_",
-            "gene_symbol_",
-            "gene_id_",
-            "no_recomb_",
-            "Q_min_",
-            "Q_recomb_",
-            "cell_barcode_peak_",
-            "cell_barcode_count_",
-        ]
-    ):
-        sbs_merge_cols.append(col)
-sbs_merge_cols = [c for c in sbs_merge_cols if c in sbs_cells.columns]
+# Merge cell information from sbs — per-barcode columns + prefix_recomb
+sbs_merge_cols = select_sbs_merge_cols(sbs_cells)
 
 merge_formatted = merge_formatted.merge(
     sbs_cells[sbs_merge_cols].rename({"tile": "site", "cell": "cell_1"}, axis=1),

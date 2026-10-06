@@ -25,6 +25,7 @@ FLAT_OUTPUTS = [
     "preprocess/metadata/phenotype/P-1_W-A1__combined_metadata.parquet",
     "sbs/parquets/P-1_W-A1__sbs_info.parquet",
     "sbs/parquets/P-1_W-A1__cells.parquet",
+    "sbs/parquets/P-1_W-A1__reads_annotated.parquet",
     "phenotype/parquets/P-1_W-A1__phenotype_info.parquet",
     "phenotype/parquets/P-1_W-A1__phenotype_cp_min.parquet",
     "merge/parquets/P-1_W-A1__merge_final.parquet",

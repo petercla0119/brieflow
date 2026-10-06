@@ -107,6 +107,18 @@ SBS_OUTPUT_MAPPINGS = {
     "eval_mapping": None,
 }
 
+# Opt-in per-read recomb / error-correction annotation (sbs.annotate_reads).
+# Default off keeps the DAG identical for every other screen.
+if config.get("sbs", {}).get("annotate_reads", False):
+    SBS_OUTPUTS["annotate_reads"] = [
+        SBS_FP / "tsvs" / get_data_output_path(_tile, "reads_annotated", "parquet", SBS_IMG_FMT),
+    ]
+    SBS_OUTPUTS["combine_reads_annotated"] = [
+        SBS_FP / "parquets" / get_data_output_path(_well, "reads_annotated", "parquet", SBS_IMG_FMT),
+    ]
+    SBS_OUTPUT_MAPPINGS["annotate_reads"] = None
+    SBS_OUTPUT_MAPPINGS["combine_reads_annotated"] = None
+
 SBS_OUTPUTS_MAPPED = map_outputs(SBS_OUTPUTS, SBS_OUTPUT_MAPPINGS)
 
 SBS_TARGETS_ALL = outputs_to_targets(
