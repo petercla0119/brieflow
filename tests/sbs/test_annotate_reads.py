@@ -121,6 +121,38 @@ def test_prefix_recomb_never_corrected():
     )
 
 
+# 5b. no_recomb_reason labels every NA, and only NAs
+def test_no_recomb_reason_partitions_the_ternary():
+    out = _annotated()
+    reason = out["no_recomb_reason"]
+    assert set(reason.unique()) <= {
+        "called",
+        "unmapped",
+        "low_q_recomb",
+        "no_expectation",
+    }
+    assert ((reason == "called") == out["no_recomb"].notna()).all()
+    assert ((reason != "called") == out["indeterminant"]).all()
+    assert reason.loc[READ_UNMAPPED] == "unmapped"
+    assert reason.loc[READ_LOW_Q_RECOMB] == "low_q_recomb"
+    assert reason.loc[READ_CLEAN] == "called"
+    assert reason.loc[READ_RECOMB_OFF] == "called"  # a False call is still a call
+    # no_expectation: library row without a prefix_recomb
+    lib = LIBRARY.copy()
+    lib.loc[lib["prefix_map"] == "CCCCCCCCCCCC", "prefix_recomb"] = None
+    out2 = annotate_reads(make_reads(), lib, **ANNOT_PARAMS).set_index("read")
+    assert out2.loc[READ_RECOMB_OFF, "no_recomb_reason"] == "no_expectation"
+    assert pd.isna(out2.loc[READ_RECOMB_OFF, "no_recomb"])
+    assert out2.loc[READ_RECOMB_OFF, "indeterminant"]
+    # simple mode: recomb detection is off, every read is disabled
+    reads_s, lib_s = make_simple_inputs()
+    simple = annotate_reads(
+        reads_s, lib_s, q_min=0, prefix_col="prefix", error_correct=False
+    )
+    assert (simple["no_recomb_reason"] == "disabled").all()
+    assert simple["indeterminant"].all()
+
+
 # 6. refactor equivalence: call_cells output unchanged on every pre-existing column
 @pytest.mark.parametrize("mode", ["multi", "simple"])
 def test_call_cells_refactor_equivalence_golden(mode):
@@ -148,6 +180,8 @@ def test_new_columns_reach_cells_and_merge():
         "corrected_1",
         "correction_cycle_0",
         "correction_cycle_1",
+        "no_recomb_reason_0",
+        "no_recomb_reason_1",
         "prefix_recomb",
     ):
         assert col in cells.columns, col
@@ -159,6 +193,9 @@ def test_new_columns_reach_cells_and_merge():
     # cell 5: rank 0 mapped T, rank 1 the unmapped read -> indeterminant_1
     assert cells.loc[5, "cell_barcode_0"] == "TTTTTTTTTTTT"
     assert cells.loc[5, "indeterminant_1"]
+    assert cells.loc[5, "no_recomb_reason_1"] == "unmapped"
+    assert cells.loc[4, "no_recomb_reason_0"] == "low_q_recomb"
+    assert cells.loc[1, "no_recomb_reason_0"] == "called"
     assert cells.loc[4, "indeterminant_0"]
     assert not cells.loc[1, "indeterminant_0"]
 
@@ -166,6 +203,7 @@ def test_new_columns_reach_cells_and_merge():
     for col in (
         "prefix_recomb",
         "no_recomb_0",
+        "no_recomb_reason_0",
         "indeterminant_0",
         "corrected_0",
         "correction_cycle_0",

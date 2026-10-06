@@ -181,8 +181,19 @@ def _annotate(
             df_mapped.loc[
                 df_mapped[recomb_filter_col] < recomb_q_thresh, "no_recomb"
             ] = np.nan
+        # Why no_recomb is <NA>, one label per read; 'called' iff a True/False
+        # call survived. Precedence mirrors the assignments above.
+        reason = np.full(len(df_mapped), "called", dtype=object)
+        is_mapped = df_mapped["mapped"].to_numpy(dtype=bool)
+        reason[is_mapped & ~both_valid.to_numpy()] = "no_expectation"
+        if recomb_filter_col is not None:
+            low_q = (df_mapped[recomb_filter_col] < recomb_q_thresh).to_numpy()
+            reason[is_mapped & both_valid.to_numpy() & low_q] = "low_q_recomb"
+        reason[~is_mapped] = "unmapped"
+        df_mapped["no_recomb_reason"] = reason
     else:
         df_mapped["no_recomb"] = np.nan
+        df_mapped["no_recomb_reason"] = "disabled"
 
     # === Read-level state (persisted by annotate_reads; consumed by call_cells) ===
 
@@ -244,6 +255,9 @@ def annotate_reads(
         passed_q_min      bool     Q_min >= q_min
         indeterminant     boolean  no_recomb is <NA> (unmapped, Q_recomb below
                                    threshold, or no library expectation)
+        no_recomb_reason  str      called | unmapped | low_q_recomb |
+                                   no_expectation | disabled (not multi mode);
+                                   'called' iff no_recomb is not <NA>
         corrected         boolean  error correction changed the mapping barcode
         correction_cycle  Int64    absolute 1-indexed cycle of the corrected base;
                                    <NA> when not corrected
@@ -255,6 +269,7 @@ def annotate_reads(
             + [
                 "mapped",
                 "no_recomb",
+                "no_recomb_reason",
                 "passed_q_min",
                 "indeterminant",
                 "corrected",
@@ -400,6 +415,7 @@ def call_cells(
     q_cols = [c for c in df_mapped.columns if c.startswith("Q_")]
     per_read_cols = q_cols + [
         "no_recomb",
+        "no_recomb_reason",
         "indeterminant",
         "corrected",
         "correction_cycle",
@@ -457,6 +473,7 @@ def call_cells(
         rename = {
             barcode_column: f"cell_barcode_{rank}",
             "no_recomb": f"no_recomb_{rank}",
+            "no_recomb_reason": f"no_recomb_reason_{rank}",
             "indeterminant": f"indeterminant_{rank}",
             "corrected": f"corrected_{rank}",
             "correction_cycle": f"correction_cycle_{rank}",
@@ -554,6 +571,8 @@ def _get_empty_output():
         "cell_barcode_1",
         "no_recomb_0",
         "no_recomb_1",
+        "no_recomb_reason_0",
+        "no_recomb_reason_1",
         "indeterminant_0",
         "indeterminant_1",
         "corrected_0",
