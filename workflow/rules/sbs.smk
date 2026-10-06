@@ -169,6 +169,33 @@ rule call_cells:
         "../scripts/sbs/call_cells.py"
 
 
+# Per-read recombination / error-correction annotation (opt-in: sbs.annotate_reads)
+if "annotate_reads" in SBS_OUTPUTS:
+
+    rule annotate_reads:
+        input:
+            SBS_OUTPUTS["call_reads"],
+        output:
+            SBS_OUTPUTS_MAPPED["annotate_reads"],
+        params:
+            config=lambda wildcards: get_call_cells_params(config),
+        script:
+            "../scripts/sbs/annotate_reads.py"
+
+    rule combine_reads_annotated:
+        input:
+            lambda wildcards: output_to_input(
+                SBS_OUTPUTS["annotate_reads"],
+                wildcards=wildcards,
+                expansion_values=["tile"],
+                metadata_combos=sbs_wildcard_combos,
+            ),
+        output:
+            SBS_OUTPUTS_MAPPED["combine_reads_annotated"],
+        script:
+            "../scripts/shared/combine_dfs.py"
+
+
 # Extract minimal sbs info
 rule extract_sbs_info:
     input:

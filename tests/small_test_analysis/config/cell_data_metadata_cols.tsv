@@ -23,6 +23,13 @@ Q_min_0
 Q_min_1
 Q_recomb_0
 Q_recomb_1
+indeterminant_0
+indeterminant_1
+corrected_0
+corrected_1
+correction_cycle_0
+correction_cycle_1
+prefix_recomb
 cell_barcode_peak_0
 cell_barcode_peak_1
 cell_barcode_count_0

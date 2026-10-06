@@ -1,6 +1,8 @@
 """Utility functions for calling cells from sequencing reads.
 
 Supports single-barcode and multi-barcode protocols with per-barcode quality tracking.
+annotate_reads() exposes the per-read state (recombination, error correction,
+indeterminacy) that call_cells() computes on the way to one row per cell.
 """
 
 import pandas as pd
@@ -44,6 +46,241 @@ def load_barcode_library(fp, sep="\t"):
     without corrupting the cache.
     """
     return _read_barcode_library_cached(fp, sep).copy()
+
+
+def _annotate(
+    reads_data,
+    df_barcode_library,
+    q_min,
+    barcode_col,
+    prefix_col,
+    map_start,
+    map_end,
+    prefix_map,
+    recomb_start,
+    recomb_end,
+    prefix_recomb,
+    recomb_filter_col,
+    recomb_q_thresh,
+    error_correct,
+    max_distance,
+    distance_metric,
+    **kwargs,
+):
+    """Steps 1-5 of call_cells on every input read, plus the per-read state.
+
+    Barcode extraction, error correction, library mapping and recombination
+    detection, followed by the read-level columns those steps used to discard
+    (passed_q_min, indeterminant, corrected, correction_cycle). The q_min filter
+    is recorded, not applied, so the output has one row per input row.
+
+    Returns:
+        (df, barcode_column, library_key, pre_correct_col) -- the frame plus the
+        three pieces of mode state call_cells needs for Steps 6-10.
+    """
+    # Auto-detect prefix_col from library if not supplied (canonical name: 'prefix')
+    if (
+        prefix_col is None
+        and map_start is None
+        and df_barcode_library is not None
+        and "prefix" in df_barcode_library.columns
+    ):
+        prefix_col = "prefix"
+        print("Auto-detected prefix_col='prefix' from barcode library")
+
+    # === STEP 1: Extract barcodes based on mode ===
+
+    if map_start is not None and map_end is not None:
+        print(f"Using cycle-based extraction: map cycles {map_start}-{map_end}")
+        df_reads = prep_multi_reads(
+            reads_data,
+            map_start=map_start,
+            map_end=map_end,
+            recomb_start=recomb_start or map_start,
+            recomb_end=recomb_end or map_end,
+            prefix_map=prefix_map,
+            prefix_recomb=prefix_recomb,
+        )
+        barcode_column = prefix_map
+        enable_recomb = recomb_start is not None and prefix_recomb in df_reads.columns
+        library_key = prefix_map
+    elif prefix_col is not None:
+        if (
+            df_barcode_library is not None
+            and prefix_col not in df_barcode_library.columns
+        ):
+            raise ValueError(f"Column '{prefix_col}' not found in barcode library")
+        print(f"Using pre-computed prefixes from '{prefix_col}' column")
+        df_reads = reads_data.copy()
+        barcode_column = BARCODE
+        enable_recomb = False
+        library_key = PREFIX
+        if df_barcode_library is not None:
+            df_barcode_library[PREFIX] = df_barcode_library[prefix_col]
+    else:
+        df_reads = reads_data.copy()
+        barcode_column = BARCODE
+        enable_recomb = False
+        library_key = PREFIX
+        if df_barcode_library is not None:
+            prefix_length = len(reads_data.iloc[0].barcode)
+            df_barcode_library[PREFIX] = df_barcode_library.apply(
+                lambda x: x[barcode_col][:prefix_length], axis=1
+            )
+            print(
+                f"Created prefixes by truncating '{barcode_col}' to length {prefix_length}"
+            )
+
+    # === STEP 3: Error correction (requires library) ===
+
+    pre_correct_col = None
+    if error_correct and df_barcode_library is not None:
+        print("performing error correction")
+        pre_correct_col = f"pre_correction_{barcode_column}"
+        df_reads[pre_correct_col] = df_reads[barcode_column]
+        df_reads[barcode_column] = error_correct_reads(
+            df_reads[barcode_column],
+            df_barcode_library[library_key],
+            max_distance=max_distance,
+            distance_metric=distance_metric,
+            **kwargs,
+        )
+
+    # === STEP 4: Map reads to library ===
+
+    if df_barcode_library is not None:
+        df_barcode_library["_temp_key"] = df_barcode_library[library_key]
+        df_mapped = (
+            pd.merge(
+                df_reads,
+                df_barcode_library[["_temp_key"]],
+                how="left",
+                left_on=barcode_column,
+                right_on="_temp_key",
+            )
+            .assign(mapped=lambda x: pd.notnull(x["_temp_key"]))
+            .drop("_temp_key", axis=1)
+        )
+    else:
+        df_mapped = df_reads.assign(mapped=True)
+
+    # === STEP 5: Recombination detection ===
+
+    if enable_recomb and prefix_recomb is not None and df_barcode_library is not None:
+        recomb_map = df_barcode_library.set_index(library_key)[prefix_recomb].to_dict()
+        expected_recomb = df_mapped[barcode_column].map(recomb_map)
+        actual_recomb = df_mapped[prefix_recomb]
+        both_valid = expected_recomb.notna() & actual_recomb.notna()
+        no_recomb = pd.array([np.nan] * len(df_mapped), dtype="boolean")
+        no_recomb[both_valid] = (
+            expected_recomb[both_valid].values == actual_recomb[both_valid].values
+        )
+        df_mapped["no_recomb"] = no_recomb
+        df_mapped.loc[~df_mapped.mapped, "no_recomb"] = np.nan
+        if recomb_filter_col is not None:
+            df_mapped.loc[
+                df_mapped[recomb_filter_col] < recomb_q_thresh, "no_recomb"
+            ] = np.nan
+    else:
+        df_mapped["no_recomb"] = np.nan
+
+    # === Read-level state (persisted by annotate_reads; consumed by call_cells) ===
+
+    # Recorded, not applied: call_cells() filters on it afterwards, so this frame
+    # keeps one row per input read even when q_min > 0.
+    df_mapped["passed_q_min"] = df_mapped["Q_min"] >= q_min
+    # Exactly complements the ternary no_recomb (True / False / <NA>).
+    df_mapped["indeterminant"] = df_mapped["no_recomb"].isna().astype("boolean")
+
+    n = len(df_mapped)
+    corrected = pd.array([False] * n, dtype="boolean")
+    correction_cycle = pd.array([pd.NA] * n, dtype="Int64")
+    if pre_correct_col is not None:
+        pre = df_mapped[pre_correct_col].to_numpy()
+        post = df_mapped[barcode_column].to_numpy()
+        # Absolute 1-indexed cycle of position 0 of the corrected barcode.
+        offset = map_start or 1
+        for i in np.flatnonzero(pre != post):
+            corrected[i] = True
+            # ponytail: first differing position only. Exact at max_distance=1
+            # against a >=3-distance library (only one base can differ); for
+            # max_distance>1 this reports the earliest miscalled cycle.
+            correction_cycle[i] = (
+                next(k for k, (a, b) in enumerate(zip(pre[i], post[i])) if a != b)
+                + offset
+            )
+    df_mapped["corrected"] = corrected
+    df_mapped["correction_cycle"] = correction_cycle
+
+    return df_mapped, barcode_column, library_key, pre_correct_col
+
+
+def annotate_reads(
+    reads_data,
+    df_barcode_library=None,
+    q_min=0,
+    barcode_col="sgRNA",
+    prefix_col=None,
+    map_start=None,
+    map_end=None,
+    prefix_map="prefix_map",
+    recomb_start=None,
+    recomb_end=None,
+    prefix_recomb="prefix_recomb",
+    recomb_filter_col=None,
+    recomb_q_thresh=0.1,
+    error_correct=False,
+    max_distance=2,
+    distance_metric="hamming",
+    **kwargs,
+):
+    """Per-read annotation frame: every input read column plus recomb/correction state.
+
+    Same arguments and semantics as call_cells() up to barcode ranking. Output
+    has one row per input read (the q_min filter is recorded as `passed_q_min`).
+
+    New columns beyond the ones call_cells already computed internally
+    (prefix_map, prefix_recomb, Q_recomb, mapped, no_recomb, pre_correction_*):
+        passed_q_min      bool     Q_min >= q_min
+        indeterminant     boolean  no_recomb is <NA> (unmapped, Q_recomb below
+                                   threshold, or no library expectation)
+        corrected         boolean  error correction changed the mapping barcode
+        correction_cycle  Int64    absolute 1-indexed cycle of the corrected base;
+                                   <NA> when not corrected
+    """
+    if reads_data is None or reads_data.empty:
+        cols = list(reads_data.columns) if reads_data is not None else []
+        return pd.DataFrame(
+            columns=cols
+            + [
+                "mapped",
+                "no_recomb",
+                "passed_q_min",
+                "indeterminant",
+                "corrected",
+                "correction_cycle",
+            ]
+        )
+    df, _, _, _ = _annotate(
+        reads_data,
+        df_barcode_library,
+        q_min=q_min,
+        barcode_col=barcode_col,
+        prefix_col=prefix_col,
+        map_start=map_start,
+        map_end=map_end,
+        prefix_map=prefix_map,
+        recomb_start=recomb_start,
+        recomb_end=recomb_end,
+        prefix_recomb=prefix_recomb,
+        recomb_filter_col=recomb_filter_col,
+        recomb_q_thresh=recomb_q_thresh,
+        error_correct=error_correct,
+        max_distance=max_distance,
+        distance_metric=distance_metric,
+        **kwargs,
+    )
+    return df
 
 
 def call_cells(
@@ -110,115 +347,34 @@ def call_cells(
     if reads_data is None or reads_data.empty:
         return _get_empty_output()
 
-    # Auto-detect prefix_col from library if not supplied (canonical name: 'prefix')
-    if (
-        prefix_col is None
-        and map_start is None
-        and df_barcode_library is not None
-        and "prefix" in df_barcode_library.columns
-    ):
-        prefix_col = "prefix"
-        print("Auto-detected prefix_col='prefix' from barcode library")
+    df_mapped, barcode_column, library_key, pre_correct_col = _annotate(
+        reads_data,
+        df_barcode_library,
+        q_min=q_min,
+        barcode_col=barcode_col,
+        prefix_col=prefix_col,
+        map_start=map_start,
+        map_end=map_end,
+        prefix_map=prefix_map,
+        recomb_start=recomb_start,
+        recomb_end=recomb_end,
+        prefix_recomb=prefix_recomb,
+        recomb_filter_col=recomb_filter_col,
+        recomb_q_thresh=recomb_q_thresh,
+        error_correct=error_correct,
+        max_distance=max_distance,
+        distance_metric=distance_metric,
+        **kwargs,
+    )
 
-    # === STEP 1: Extract barcodes based on mode ===
-
-    if map_start is not None and map_end is not None:
-        print(f"Using cycle-based extraction: map cycles {map_start}-{map_end}")
-        df_reads = prep_multi_reads(
-            reads_data,
-            map_start=map_start,
-            map_end=map_end,
-            recomb_start=recomb_start or map_start,
-            recomb_end=recomb_end or map_end,
-            prefix_map=prefix_map,
-            prefix_recomb=prefix_recomb,
-        )
-        barcode_column = prefix_map
-        enable_recomb = recomb_start is not None and prefix_recomb in df_reads.columns
-        library_key = prefix_map
-    elif prefix_col is not None:
-        if (
-            df_barcode_library is not None
-            and prefix_col not in df_barcode_library.columns
-        ):
-            raise ValueError(f"Column '{prefix_col}' not found in barcode library")
-        print(f"Using pre-computed prefixes from '{prefix_col}' column")
-        df_reads = reads_data
-        barcode_column = BARCODE
-        enable_recomb = False
-        library_key = PREFIX
-        if df_barcode_library is not None:
-            df_barcode_library[PREFIX] = df_barcode_library[prefix_col]
-    else:
-        df_reads = reads_data
-        barcode_column = BARCODE
-        enable_recomb = False
-        library_key = PREFIX
-        if df_barcode_library is not None:
-            prefix_length = len(reads_data.iloc[0].barcode)
-            df_barcode_library[PREFIX] = df_barcode_library.apply(
-                lambda x: x[barcode_col][:prefix_length], axis=1
-            )
-            print(
-                f"Created prefixes by truncating '{barcode_col}' to length {prefix_length}"
-            )
-
-    # === STEP 2: Quality filter ===
-
-    df_reads = df_reads.query("Q_min >= @q_min")
-
-    # === STEP 3: Error correction (requires library) ===
-
-    pre_correct_col = None
-    if error_correct and df_barcode_library is not None:
-        print("performing error correction")
-        pre_correct_col = f"pre_correction_{barcode_column}"
-        df_reads[pre_correct_col] = df_reads[barcode_column]
-        df_reads[barcode_column] = error_correct_reads(
-            df_reads[barcode_column],
-            df_barcode_library[library_key],
-            max_distance=max_distance,
-            distance_metric=distance_metric,
-            **kwargs,
-        )
-
-    # === STEP 4: Map reads to library ===
-
-    if df_barcode_library is not None:
-        df_barcode_library["_temp_key"] = df_barcode_library[library_key]
-        df_mapped = (
-            pd.merge(
-                df_reads,
-                df_barcode_library[["_temp_key"]],
-                how="left",
-                left_on=barcode_column,
-                right_on="_temp_key",
-            )
-            .assign(mapped=lambda x: pd.notnull(x["_temp_key"]))
-            .drop("_temp_key", axis=1)
-        )
-    else:
-        df_mapped = df_reads.assign(mapped=True)
-
-    # === STEP 5: Recombination detection ===
-
-    if enable_recomb and prefix_recomb is not None and df_barcode_library is not None:
-        recomb_map = df_barcode_library.set_index(library_key)[prefix_recomb].to_dict()
-        expected_recomb = df_mapped[barcode_column].map(recomb_map)
-        actual_recomb = df_mapped[prefix_recomb]
-        both_valid = expected_recomb.notna() & actual_recomb.notna()
-        no_recomb = pd.array([np.nan] * len(df_mapped), dtype="boolean")
-        no_recomb[both_valid] = (
-            expected_recomb[both_valid].values == actual_recomb[both_valid].values
-        )
-        df_mapped["no_recomb"] = no_recomb
-        df_mapped.loc[~df_mapped.mapped, "no_recomb"] = np.nan
-        if recomb_filter_col is not None:
-            df_mapped.loc[
-                df_mapped[recomb_filter_col] < recomb_q_thresh, "no_recomb"
-            ] = np.nan
-    else:
-        df_mapped["no_recomb"] = np.nan
+    # === STEP 2 (applied here): quality filter ===
+    # _annotate recorded passed_q_min on every read; drop the failures now so
+    # Steps 6-10 see exactly the frame they always did.
+    df_mapped = (
+        df_mapped[df_mapped["passed_q_min"]]
+        .drop(columns=["passed_q_min"])
+        .reset_index(drop=True)
+    )
 
     # === STEP 6: Rank barcodes per cell ===
 
@@ -242,7 +398,14 @@ def call_cells(
     # === STEP 7: Build per-barcode output ===
 
     q_cols = [c for c in df_mapped.columns if c.startswith("Q_")]
-    per_read_cols = q_cols + ["no_recomb", "peak", "mapped"]
+    per_read_cols = q_cols + [
+        "no_recomb",
+        "indeterminant",
+        "corrected",
+        "correction_cycle",
+        "peak",
+        "mapped",
+    ]
     if pre_correct_col and pre_correct_col in df_mapped.columns:
         per_read_cols.append(pre_correct_col)
 
@@ -294,6 +457,9 @@ def call_cells(
         rename = {
             barcode_column: f"cell_barcode_{rank}",
             "no_recomb": f"no_recomb_{rank}",
+            "indeterminant": f"indeterminant_{rank}",
+            "corrected": f"corrected_{rank}",
+            "correction_cycle": f"correction_cycle_{rank}",
             "peak": f"cell_barcode_peak_{rank}",
         }
         for qc in q_cols:
@@ -388,6 +554,12 @@ def _get_empty_output():
         "cell_barcode_1",
         "no_recomb_0",
         "no_recomb_1",
+        "indeterminant_0",
+        "indeterminant_1",
+        "corrected_0",
+        "corrected_1",
+        "correction_cycle_0",
+        "correction_cycle_1",
         "Q_min_0",
         "Q_min_1",
         "gene_symbol_0",

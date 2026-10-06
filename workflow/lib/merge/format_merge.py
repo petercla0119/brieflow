@@ -49,6 +49,40 @@ def fov_distance(
     return df
 
 
+# SBS cell columns carried into the merge-formatted table. One list for both
+# the Snakemake script and the direct runner so they cannot drift.
+# prefix_recomb is a bare (rank-0, unsuffixed) column, hence listed explicitly.
+SBS_MERGE_BASE_COLS = [
+    "plate",
+    "well",
+    "tile",
+    "cell",
+    "mapped_single_gene",
+    "prefix_recomb",
+]
+SBS_MERGE_PREFIXES = (
+    "cell_barcode_",
+    "gene_symbol_",
+    "gene_id_",
+    "no_recomb_",
+    "indeterminant_",
+    "corrected_",
+    "correction_cycle_",
+    "Q_min_",
+    "Q_recomb_",
+    "cell_barcode_peak_",
+    "cell_barcode_count_",
+)
+
+
+def select_sbs_merge_cols(sbs_cells: pd.DataFrame) -> list:
+    """Ordered SBS-cell columns to carry into merge (only those present)."""
+    cols = SBS_MERGE_BASE_COLS + [
+        c for c in sbs_cells.columns if c.startswith(SBS_MERGE_PREFIXES)
+    ]
+    return [c for c in cols if c in sbs_cells.columns]
+
+
 def identify_single_gene_mappings(sbs_row: pd.Series) -> bool:
     """Determines if a row has a single mapped gene across all barcode ranks.
 
