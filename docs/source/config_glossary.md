@@ -9,4 +9,5 @@ While all of the parameters are explicity outlined in each notebook, we provide 
 - `sbs:df_design_path`: Path to dataframe with SBS pool design information regarding gene, sgRNA, oligo, etc.
 - `*_combo_fp`: Path to dataframe with wildcards for file processing in a particular module.
 Each combination usually corresponds to a one process that needs to be done with Snakemake.
-For example, each plate, well, tile combination in `phenotype_combo_fp` corresponds to one ND2 -> tiff file conversion during preprocessing.
+For example, each plate, well, tile combination in `phenotype_combo_fp` corresponds to one raw file conversion during preprocessing.
+- `merge:positions_image_qc`: with `merge:approach: positions`, whether each well also writes the seam, phenotype-in-SBS and mosaic image readouts (default `true`). They read a bounded sample of tiles; set `false` when the aligned images and nuclei labels are no longer on disk or to save the extra minute per well.
