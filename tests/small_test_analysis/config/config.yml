@@ -152,6 +152,7 @@ sbs:
   df_barcode_library_fp: config/barcode_library.tsv
   threshold_peaks: 400
   call_reads_method: median
+  annotate_reads: true  # opt-in per-read recomb/correction output; on here so CI exercises it
   bases:
   - G
   - T
