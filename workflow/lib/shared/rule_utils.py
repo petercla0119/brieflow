@@ -520,6 +520,7 @@ def get_call_cells_params(config: Dict[str, Any]) -> Dict[str, Any]:
                 "prefix_recomb": sbs_config.get("prefix_recomb", "prefix_recomb"),
                 "recomb_filter_col": sbs_config.get("recomb_filter_col", None),
                 "recomb_q_thresh": sbs_config.get("recomb_q_thresh", 0.1),
+                "recomb_call_mode": sbs_config.get("recomb_call_mode", "low_q"),
             }
         )
     else:

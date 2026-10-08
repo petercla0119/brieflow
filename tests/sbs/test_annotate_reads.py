@@ -153,6 +153,58 @@ def test_no_recomb_reason_partitions_the_ternary():
     assert simple["indeterminant"].all()
 
 
+# 5c. recomb_call_mode="mismatch_low_q" (Owen, 2026-09-17): quality is consulted
+#     only when the barcodes disagree, so a low-Q *match* becomes a True call.
+def _flip_base(b):
+    return {"A": "C", "C": "G", "G": "T", "T": "A"}[b]
+
+
+def test_mismatch_low_q_mode_calls_low_q_matches():
+    reads = make_reads()
+    # Build a low-Q read whose recomb 3-mer MISmatches: clone the low-Q match
+    # read and flip its last recomb base. Built here so the golden fixture is
+    # untouched.
+    LOW_Q_MISMATCH = 99
+    src = reads.loc[reads["read"] == READ_LOW_Q_RECOMB].copy()
+    src["read"] = LOW_Q_MISMATCH
+    src["cell"] = 99
+    src["barcode"] = src["barcode"].str[:14] + src["barcode"].str[14].map(_flip_base)
+    reads = pd.concat([reads, src], ignore_index=True)
+
+    default = annotate_reads(reads, LIBRARY.copy(), **ANNOT_PARAMS).set_index("read")
+    owen = annotate_reads(
+        reads, LIBRARY.copy(), recomb_call_mode="mismatch_low_q", **ANNOT_PARAMS
+    ).set_index("read")
+
+    # low-Q + match: abstains by default, a True call under Owen's rule
+    assert pd.isna(default.loc[READ_LOW_Q_RECOMB, "no_recomb"])
+    assert default.loc[READ_LOW_Q_RECOMB, "no_recomb_reason"] == "low_q_recomb"
+    assert owen.loc[READ_LOW_Q_RECOMB, "no_recomb"] is not pd.NA
+    assert owen.loc[READ_LOW_Q_RECOMB, "no_recomb"]
+    assert owen.loc[READ_LOW_Q_RECOMB, "no_recomb_reason"] == "called"
+    assert not owen.loc[READ_LOW_Q_RECOMB, "indeterminant"]
+
+    # low-Q + mismatch: abstains in both modes, with the mode-specific label
+    assert pd.isna(default.loc[LOW_Q_MISMATCH, "no_recomb"])
+    assert pd.isna(owen.loc[LOW_Q_MISMATCH, "no_recomb"])
+    assert default.loc[LOW_Q_MISMATCH, "no_recomb_reason"] == "low_q_recomb"
+    assert owen.loc[LOW_Q_MISMATCH, "no_recomb_reason"] == "low_q_mismatch"
+    assert owen.loc[LOW_Q_MISMATCH, "indeterminant"]
+
+    # every other read is identical between the two modes
+    others = [r for r in default.index if r not in (READ_LOW_Q_RECOMB, LOW_Q_MISMATCH)]
+    assert default.loc[others, "no_recomb"].equals(owen.loc[others, "no_recomb"])
+    assert (default.loc[others, "no_recomb_reason"] == owen.loc[others, "no_recomb_reason"]).all()
+
+    # invariants hold under the new mode
+    assert (owen["indeterminant"] == owen["no_recomb"].isna()).all()
+    assert ((owen["no_recomb_reason"] == "called") == owen["no_recomb"].notna()).all()
+    assert set(owen["no_recomb_reason"].unique()) <= {"called", "unmapped", "low_q_mismatch", "no_expectation"}
+
+    with pytest.raises(ValueError):
+        annotate_reads(reads, LIBRARY.copy(), recomb_call_mode="owen", **ANNOT_PARAMS)
+
+
 # 6. refactor equivalence: call_cells output unchanged on every pre-existing column
 @pytest.mark.parametrize("mode", ["multi", "simple"])
 def test_call_cells_refactor_equivalence_golden(mode):

@@ -542,6 +542,7 @@ def _call_cells_one(task):
                 prefix_recomb=cc_params["prefix_recomb"],
                 recomb_filter_col=cc_params["recomb_filter_col"],
                 recomb_q_thresh=cc_params["recomb_q_thresh"],
+                recomb_call_mode=cc_params.get("recomb_call_mode", "low_q"),
                 error_correct=cc_params["error_correct"],
                 sort_calls=cc_params["sort_calls"],
                 max_distance=cc_params["max_distance"],
@@ -590,6 +591,7 @@ def _annotate_reads_one(task):
                 prefix_recomb=cc_params["prefix_recomb"],
                 recomb_filter_col=cc_params["recomb_filter_col"],
                 recomb_q_thresh=cc_params["recomb_q_thresh"],
+                recomb_call_mode=cc_params.get("recomb_call_mode", "low_q"),
                 error_correct=cc_params["error_correct"],
                 max_distance=cc_params["max_distance"],
             )
