@@ -15,6 +15,27 @@ MERGE_OUTPUTS = {
             {"plate": "{plate}", "well": "{well}"}, "fast_merge", "parquet"
         ),
     ],
+    "positions_merge": [
+        MERGE_FP / "parquets" / get_filename(
+            {"plate": "{plate}", "well": "{well}"}, "positions_merge", "parquet"
+        ),
+    ]
+    + (
+        [
+            MERGE_FP / "eval" / get_filename(
+                {"plate": "{plate}", "well": "{well}"}, name, ext
+            )
+            for name, ext in (
+                ("positions_merge_qc", "tsv"),
+                ("positions_image_qc", "tsv"),
+                ("positions_tile_overlaps", "png"),
+                ("positions_phenotype_in_sbs", "png"),
+                ("positions_mosaic", "png"),
+            )
+        ]
+        if config.get("merge", {}).get("positions_image_qc", False)
+        else []
+    ),
     "estimate_stitch_phenotype": [
         MERGE_FP
         / "stitch_configs"
@@ -152,6 +173,7 @@ MERGE_OUTPUTS = {
 MERGE_OUTPUT_MAPPINGS = {
     "fast_alignment": None,
     "fast_merge": None,
+    "positions_merge": None,
     "estimate_stitch_phenotype": temp,
     "estimate_stitch_sbs": temp,
     "stitch_phenotype": [temp, None, temp, temp],
