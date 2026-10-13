@@ -112,3 +112,21 @@ def test_concurrency_group_is_per_run_not_per_leg():
     # Adding matrix values to the group would let a stale leg outlive the run
     # that superseded it.
     assert "matrix" not in concurrency["group"]
+
+
+def test_pytest_also_runs_before_the_test_data_and_pipeline():
+    # Fail fast: a unit-test break must not wait out a 24-75 min leg first
+    # (run #54 reported the same 9 failures 37-61 min in). Ungated, like the
+    # post-pipeline run, so every leg stops early instead of only one.
+    early = step("pytest -q")
+    assert "if" not in early, "the early pytest must run on every leg"
+    # No zarr store exists yet, so REQUIRE_ZARR here is a guaranteed false failure.
+    assert "BRIEFLOW_REQUIRE_ZARR" not in early.get("env", {})
+    first = STEPS.index(early)
+    for later in (
+        "small_test_analysis_setup.py",
+        "run_brieflow.sh",
+        "run_preprocess_direct.py",
+        "pytest -rs",
+    ):
+        assert first < STEPS.index(step(later)), f"early pytest must precede {later}"

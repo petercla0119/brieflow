@@ -30,7 +30,7 @@ jobs:
     # tiff/zarr run the Snakemake pipeline in each output format; direct runs the
     # four direct runners, which is the path every real plate run takes and which
     # Snakemake never touches (#52). One job with three legs so all three reuse
-    # the conda setup and disk cleanup below.
+    # the conda setup and test-data cache below.
     strategy:
       fail-fast: false
       matrix:
@@ -40,36 +40,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Free disk space (max safe)
-        run: |
-          echo "=== BEFORE CLEANUP ==="
-          df -h
-
-          # big toolchains + languages
-          sudo rm -rf /usr/share/dotnet \
-                      /usr/local/share/dotnet \
-                      /opt/ghc \
-                      /usr/local/lib/android \
-                      /opt/hostedtoolcache
-
-          # browsers + automation frameworks
-          sudo rm -rf /usr/lib/playwright \
-                      /usr/lib/chromium \
-                      /usr/bin/google-chrome \
-                      /usr/bin/chromedriver
-
-          # azure cli
-          sudo rm -rf /usr/lib/azure-cli \
-                      /opt/az
-
-          # caches
-          sudo rm -rf ~/.cache
-
-          # docker cleanup
-          sudo docker system prune -af || true
-
-          echo "=== AFTER CLEANUP ==="
-          df -h
+      # No disk cleanup: the runner starts with ~87 GB free and a leg writes ~5 GB
+      # (measured on run #44), so the old cleanup step bought ~1.7 min of nothing per
+      # leg. The disk report at the end of the job keeps the real headroom visible.
 
       # Set up Conda
       - name: Set up Conda
@@ -98,13 +71,45 @@ jobs:
           conda activate brieflow_ci
           echo "CONDA_DEFAULT_ENV=brieflow_ci" >> $GITHUB_ENV
 
-      # Run setup for small test analysis
+      # Fail fast: run the suite before the test data and the pipeline. A unit-test
+      # break otherwise surfaces only after a 24-75 min leg (run #54: the same 9
+      # failures on all three legs, reported 37-61 min in). Tests that need the
+      # test data or pipeline outputs skip here and run for real in the post-pipeline
+      # `pytest -rs` step below. BRIEFLOW_REQUIRE_ZARR is left unset on purpose: no
+      # leg has a zarr store yet.
+      - name: Run pytest (before pipeline)
+        shell: bash -l {0}
+        run: |
+          conda activate brieflow_ci
+          pytest -q
+
+      # 1.31 GB from Zenodo: 5-9 min per leg cold. Restore and save are separate
+      # steps so the data is cached right after download -- the combined
+      # actions/cache saves at job end and skips the save when the leg fails.
+      # PR runs can restore the cache written by pushes to their base branch.
+      - name: Restore small test data
+        id: test-data
+        uses: actions/cache/restore@v4
+        with:
+          path: tests/small_test_analysis/small_test_data
+          key: small-test-data-${{ hashFiles('tests/small_test_analysis/small_test_analysis_setup.py') }}
+
       - name: Run small test setup
+        if: steps.test-data.outputs.cache-hit != 'true'
         shell: bash -l {0}
         working-directory: tests/small_test_analysis
         run: |
           conda activate brieflow_ci
           python small_test_analysis_setup.py
+
+      # On a cold cache all three legs try to save the same key; one wins and the
+      # others log a warning, not a failure.
+      - name: Save small test data
+        if: steps.test-data.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: tests/small_test_analysis/small_test_data
+          key: ${{ steps.test-data.outputs.cache-primary-key }}
 
       # Run Brieflow through Snakemake. Named "via Snakemake" because the step
       # name interpolates the leg: on the direct leg it would read "Run Brieflow
@@ -181,3 +186,7 @@ jobs:
         run: |
           conda activate brieflow_ci
           pytest -rs
+
+      - name: Report disk headroom
+        if: always()
+        run: df -h /
