@@ -1,7 +1,7 @@
-"""Annotate reads with per-read recombination / error-correction state (opt-in).
+"""Annotate reads with per-read recombination / error-correction state.
 
-Same parameters as call_cells (get_call_cells_params); writes one row per input
-read. Enabled by `sbs.annotate_reads: true`.
+Same parameters as call_cells (get_call_cells_params); reads the well-grain
+reads.parquet and writes one row per input read. On unless `sbs.annotate_reads: false`.
 """
 
 from lib.sbs.call_cells import annotate_reads, load_barcode_library

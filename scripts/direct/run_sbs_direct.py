@@ -857,17 +857,6 @@ def process_sbs(config, args):
         tasks.append((reads_p, out, cc_params))
     errs += run_parallel(tasks, _call_cells_one, w, "Call cells")
 
-    # --- Step 10b: Annotate reads (opt-in: sbs.annotate_reads) ---
-    annotate_flag = sbs_cfg.get("annotate_reads", False)
-    if annotate_flag:
-        tasks = []
-        for _, r in post_seg_tc.iterrows():
-            p, we, ti = r["plate"], r["well"], r["tile"]
-            reads_p = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads", "parquet")
-            out = sbs_data_path(sbs_fp, fmt, p, we, ti, "reads_annotated", "parquet")
-            tasks.append((reads_p, out, cc_params))
-        errs += run_parallel(tasks, _annotate_reads_one, w, "Annotate reads")
-
     # --- Step 11: Extract SBS info ---
     tasks = []
     for _, r in post_seg_tc.iterrows():
@@ -892,8 +881,6 @@ def process_sbs(config, args):
     with monitor_step("Combine SBS"):
         print(f"\n  Combine per well...")
         info_types = ["reads", "cells", "sbs_info"]
-        if annotate_flag:
-            info_types.append("reads_annotated")
         for info_type in info_types:
             for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
                 out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
@@ -942,6 +929,19 @@ def process_sbs(config, args):
                 print(
                     f"    OK combine {info_type} P{plate}/W{well} ({len(combined)} rows)"
                 )
+
+    # --- Step 14b: Annotate reads per well from reads.parquet (sbs.annotate_reads, default on) ---
+    if sbs_cfg.get("annotate_reads", True):
+        tasks = [
+            (
+                sbs_well_path(sbs_fp, fmt, plate, well, "reads", "parquet"),
+                sbs_well_path(sbs_fp, fmt, plate, well, "reads_annotated", "parquet"),
+                cc_params,
+            )
+            for (plate, well), _ in tile_combos.groupby(["plate", "well"])
+        ]
+        # ponytail: ~11 GB peak per 5-6 M-read well (4 workers OOM'd a 32 GB VM); raise with RAM.
+        errs += run_parallel(tasks, _annotate_reads_one, min(w, 2), "Annotate reads")
 
     # --- Steps 15-16: Eval per plate ---
     print(f"\n  Eval per plate...")
