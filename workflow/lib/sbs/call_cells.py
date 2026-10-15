@@ -65,6 +65,7 @@ def _annotate(
     error_correct,
     max_distance,
     distance_metric,
+    recomb_call_mode="low_q",
     **kwargs,
 ):
     """Steps 1-5 of call_cells on every input read, plus the per-read state.
@@ -177,18 +178,34 @@ def _annotate(
         )
         df_mapped["no_recomb"] = no_recomb
         df_mapped.loc[~df_mapped.mapped, "no_recomb"] = np.nan
+        if recomb_call_mode not in ("low_q", "mismatch_low_q"):
+            raise ValueError(
+                f"recomb_call_mode must be 'low_q' or 'mismatch_low_q', got {recomb_call_mode!r}"
+            )
+        abstain = None
         if recomb_filter_col is not None:
-            df_mapped.loc[
-                df_mapped[recomb_filter_col] < recomb_q_thresh, "no_recomb"
-            ] = np.nan
+            low_q = (df_mapped[recomb_filter_col] < recomb_q_thresh).to_numpy()
+            if recomb_call_mode == "low_q":
+                # Historical rule: every mapped read below the gate abstains.
+                abstain = low_q
+            else:
+                # Owen's rule (2026-09-17): a matching iBar1 is a call at any
+                # quality; quality is consulted only when the barcodes disagree.
+                mismatch = (
+                    (df_mapped["no_recomb"] == False)  # noqa: E712 (nullable boolean)
+                    .fillna(False)
+                    .to_numpy(dtype=bool)
+                )
+                abstain = low_q & mismatch
+            df_mapped.loc[abstain, "no_recomb"] = np.nan
         # Why no_recomb is <NA>, one label per read; 'called' iff a True/False
         # call survived. Precedence mirrors the assignments above.
         reason = np.full(len(df_mapped), "called", dtype=object)
         is_mapped = df_mapped["mapped"].to_numpy(dtype=bool)
         reason[is_mapped & ~both_valid.to_numpy()] = "no_expectation"
-        if recomb_filter_col is not None:
-            low_q = (df_mapped[recomb_filter_col] < recomb_q_thresh).to_numpy()
-            reason[is_mapped & both_valid.to_numpy() & low_q] = "low_q_recomb"
+        if abstain is not None:
+            label = "low_q_recomb" if recomb_call_mode == "low_q" else "low_q_mismatch"
+            reason[is_mapped & both_valid.to_numpy() & abstain] = label
         reason[~is_mapped] = "unmapped"
         df_mapped["no_recomb_reason"] = reason
     else:
@@ -240,6 +257,7 @@ def annotate_reads(
     prefix_recomb="prefix_recomb",
     recomb_filter_col=None,
     recomb_q_thresh=0.1,
+    recomb_call_mode="low_q",
     error_correct=False,
     max_distance=2,
     distance_metric="hamming",
@@ -255,7 +273,8 @@ def annotate_reads(
         passed_q_min      bool     Q_min >= q_min
         indeterminant     boolean  no_recomb is <NA> (unmapped, Q_recomb below
                                    threshold, or no library expectation)
-        no_recomb_reason  str      called | unmapped | low_q_recomb |
+        no_recomb_reason  str      called | unmapped | low_q_recomb (or
+                                   low_q_mismatch under mismatch_low_q) |
                                    no_expectation | disabled (not multi mode);
                                    'called' iff no_recomb is not <NA>
         corrected         boolean  error correction changed the mapping barcode
@@ -290,6 +309,7 @@ def annotate_reads(
         prefix_recomb=prefix_recomb,
         recomb_filter_col=recomb_filter_col,
         recomb_q_thresh=recomb_q_thresh,
+        recomb_call_mode=recomb_call_mode,
         error_correct=error_correct,
         max_distance=max_distance,
         distance_metric=distance_metric,
@@ -312,6 +332,7 @@ def call_cells(
     prefix_recomb="prefix_recomb",
     recomb_filter_col=None,
     recomb_q_thresh=0.1,
+    recomb_call_mode="low_q",
     sort_calls="peak",
     error_correct=False,
     max_distance=2,
@@ -341,6 +362,9 @@ def call_cells(
         prefix_recomb: Column name for recombination barcode.
         recomb_filter_col: Quality column for filtering recombination calls.
         recomb_q_thresh: Minimum quality for recombination detection.
+        recomb_call_mode: 'low_q' (default) abstains on every mapped read below
+            recomb_q_thresh; 'mismatch_low_q' abstains only when the recomb
+            barcode also mismatches, so a matching iBar1 is a call at any quality.
         sort_calls: "count" (by read frequency) or "peak" (by intensity).
         error_correct: Whether to correct sequencing errors against library.
         max_distance: Maximum edit distance for error correction.
@@ -376,6 +400,7 @@ def call_cells(
         prefix_recomb=prefix_recomb,
         recomb_filter_col=recomb_filter_col,
         recomb_q_thresh=recomb_q_thresh,
+        recomb_call_mode=recomb_call_mode,
         error_correct=error_correct,
         max_distance=max_distance,
         distance_metric=distance_metric,
