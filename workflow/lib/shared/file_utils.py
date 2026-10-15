@@ -1,5 +1,6 @@
 """Utility functions for handling and filtering sample file paths in the BrieFlow pipeline."""
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -424,6 +425,42 @@ def get_data_output_path(data_location, info_type, file_type, img_fmt="tiff"):
         rowcol_loc = _well_to_rowcol(data_location)
         return get_nested_path(rowcol_loc, info_type, file_type)
     return get_filename(data_location, info_type, file_type)
+
+
+WELL_ROWCOL_PATTERNS = (
+    re.compile(r"^([A-Za-z]+)(\d+)$"),
+    re.compile(r"^([Rr]\d+)([Cc]\d+)$"),
+)
+
+
+def split_well(well):
+    """Split a well id into its ``(row, col)`` HCS-path components.
+
+    Canonical scalar derivation shared with the vectorized :func:`split_well_to_cols`
+    via ``WELL_ROWCOL_PATTERNS`` (alphanumeric ``"A1"`` -> ``("A", "1")``, Opera Phenix
+    ``"r02c05"`` -> ``("r02", "c05")``, prefixes kept so ``str(row)+str(col)`` round-trips).
+    Raises ``ValueError`` on an unrecognized convention rather than mis-splitting — the
+    naive ``well[0], well[1:]`` turned ``"r02c05"`` into ``("r", "02c05")`` and 404'd
+    every HCS-nested path.
+
+    Args:
+        well: Well identifier (e.g. ``"A1"``, ``"r02c05"``).
+
+    Returns:
+        tuple[str, str]: ``(row, col)``.
+
+    Raises:
+        ValueError: If ``well`` matches no known convention.
+    """
+    s = str(well)
+    for pattern in WELL_ROWCOL_PATTERNS:
+        m = pattern.match(s)
+        if m:
+            return m.group(1), m.group(2)
+    raise ValueError(
+        f"Cannot split well '{well}' into (row, col): matches no known convention "
+        f"(alphanumeric 'A1' or Opera Phenix 'r02c05'). Extend WELL_ROWCOL_PATTERNS."
+    )
 
 
 def split_well_to_cols(df):
