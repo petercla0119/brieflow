@@ -935,7 +935,7 @@ def process_sbs(config, args):
         tasks = [
             (
                 sbs_well_path(sbs_fp, fmt, plate, well, "reads", "parquet"),
-                sbs_well_path(sbs_fp, fmt, plate, well, "reads_annotated", "parquet"),
+                sbs_well_path(sbs_fp, fmt, plate, well, "processed_reads", "parquet"),
                 cc_params,
             )
             for (plate, well), _ in tile_combos.groupby(["plate", "well"])

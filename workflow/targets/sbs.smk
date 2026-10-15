@@ -111,7 +111,7 @@ SBS_OUTPUT_MAPPINGS = {
 # new plates never silently lack it; set false to opt out). Well grain.
 if config.get("sbs", {}).get("annotate_reads", True):
     SBS_OUTPUTS["annotate_reads"] = [
-        SBS_FP / "parquets" / get_data_output_path(_well, "reads_annotated", "parquet", SBS_IMG_FMT),
+        SBS_FP / "parquets" / get_data_output_path(_well, "processed_reads", "parquet", SBS_IMG_FMT),
     ]
     SBS_OUTPUT_MAPPINGS["annotate_reads"] = None
 
