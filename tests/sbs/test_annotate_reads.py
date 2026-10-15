@@ -194,12 +194,19 @@ def test_mismatch_low_q_mode_calls_low_q_matches():
     # every other read is identical between the two modes
     others = [r for r in default.index if r not in (READ_LOW_Q_RECOMB, LOW_Q_MISMATCH)]
     assert default.loc[others, "no_recomb"].equals(owen.loc[others, "no_recomb"])
-    assert (default.loc[others, "no_recomb_reason"] == owen.loc[others, "no_recomb_reason"]).all()
+    assert (
+        default.loc[others, "no_recomb_reason"] == owen.loc[others, "no_recomb_reason"]
+    ).all()
 
     # invariants hold under the new mode
     assert (owen["indeterminant"] == owen["no_recomb"].isna()).all()
     assert ((owen["no_recomb_reason"] == "called") == owen["no_recomb"].notna()).all()
-    assert set(owen["no_recomb_reason"].unique()) <= {"called", "unmapped", "low_q_mismatch", "no_expectation"}
+    assert set(owen["no_recomb_reason"].unique()) <= {
+        "called",
+        "unmapped",
+        "low_q_mismatch",
+        "no_expectation",
+    }
 
     with pytest.raises(ValueError):
         annotate_reads(reads, LIBRARY.copy(), recomb_call_mode="owen", **ANNOT_PARAMS)
