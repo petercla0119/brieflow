@@ -22,8 +22,11 @@ if str(_WORKFLOW) not in sys.path:
 from lib.merge.positions_merge import (  # noqa: E402
     MERGE_COLUMNS,
     ORIENTATIONS,
+    PLACEMENT_COLUMNS,
     coarse_translation,
     orient_local,
+    placement_from_table,
+    placement_to_table,
     positions_merge,
     tile_pixel_to_um,
     um_to_tile_pixel,
@@ -354,3 +357,35 @@ def test_radial_lens_distortion():
     assert qc["phenotype_radial_edge_um"].iloc[0] == pytest.approx(
         0.004 * PH_PX * (TILE_PX - 1) / 2, abs=0.15
     )
+
+
+def test_placement_table_round_trips():
+    ph, sbs = make_screen(seed=3, orientation=(True, False, 1))
+    merged, _qc, placement = run_full(ph, sbs, (True, False, 1))
+    table = placement_to_table(placement)
+    assert list(table.columns) == PLACEMENT_COLUMNS
+    assert len(table) == sum(len(placement[m]["tiles"]) for m in placement)
+    assert set(table["modality"]) == {"phenotype", "sbs"}
+    back = placement_from_table(table)
+    for name, tile_col, i_col, j_col in (
+        ("phenotype", "tile", "i_0", "j_0"),
+        ("sbs", "site", "i_1", "j_1"),
+    ):
+        assert back[name]["dimensions"] == placement[name]["dimensions"]
+        assert tuple(back[name]["orientation"]) == tuple(placement[name]["orientation"])
+        pd.testing.assert_frame_equal(
+            back[name]["tiles"], placement[name]["tiles"], check_index_type=False
+        )
+        for _, row in merged.head(50).iterrows():
+            pixels = [[row[i_col], row[j_col]]]
+            np.testing.assert_allclose(
+                tile_pixel_to_um(back[name], row[tile_col], pixels),
+                tile_pixel_to_um(placement[name], row[tile_col], pixels),
+                atol=1e-9,
+            )
+
+
+def test_placement_table_empty_without_placement():
+    table = placement_to_table(None)
+    assert table.empty
+    assert list(table.columns) == PLACEMENT_COLUMNS
