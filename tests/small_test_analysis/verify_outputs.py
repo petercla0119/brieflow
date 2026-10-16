@@ -31,7 +31,7 @@ COMMON = [
     "preprocess/metadata/phenotype/**/*combined_metadata.parquet",
     "sbs/parquets/**/*sbs_info.parquet",
     "sbs/parquets/**/*cells.parquet",
-    "sbs/parquets/**/*reads_annotated.parquet",
+    "sbs/parquets/**/*processed_reads.parquet",
     "phenotype/parquets/**/*phenotype_info.parquet",
     # phenotype_cp_min, NOT phenotype_cp: extract_phenotype writes its *per-tile*
     # phenotype_cp parquets into this same directory, and the small test ships
