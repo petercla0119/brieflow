@@ -456,6 +456,112 @@ def um_to_tile_pixel(placement, tile, xy, iterations=4):
     return pixels
 
 
+PLACEMENT_COLUMNS = [
+    "modality",
+    "tile",
+    "x_pos",
+    "y_pos",
+    "dx",
+    "dy",
+    "source",
+    "pixel_size",
+    "height",
+    "width",
+    "flipud",
+    "fliplr",
+    "rot90",
+    "m00",
+    "m01",
+    "m10",
+    "m11",
+    "r2",
+    "r4",
+    "offset_x",
+    "offset_y",
+]
+
+
+def placement_to_table(placement):
+    """Flatten the placement returned by `positions_merge` to one row per modality and tile.
+
+    The per-modality scalars (camera matrix, radial terms, offset, orientation, tile
+    dimensions, pixel size) are repeated on every row of that modality so the table is a
+    single flat parquet. `placement_from_table` is the exact inverse.
+
+    Args:
+        placement (dict | None): As returned by `positions_merge`; None when the merge had
+            too few cells.
+
+    Returns:
+        pandas.DataFrame: `PLACEMENT_COLUMNS`; empty when `placement` is None.
+    """
+    if placement is None:
+        return pd.DataFrame(columns=PLACEMENT_COLUMNS)
+    frames = []
+    for name, p in placement.items():
+        height, width = p["dimensions"]
+        flipud, fliplr, rot90 = p["orientation"]
+        m = np.asarray(p["matrix"], dtype=float)
+        r = np.asarray(p["radial"], dtype=float)
+        o = np.asarray(p["offset"], dtype=float)
+        tiles = (
+            p["tiles"]
+            .reset_index()
+            .assign(
+                modality=name,
+                pixel_size=float(p["pixel_size"]),
+                height=int(height),
+                width=int(width),
+                flipud=bool(flipud),
+                fliplr=bool(fliplr),
+                rot90=int(rot90),
+                m00=m[0, 0],
+                m01=m[0, 1],
+                m10=m[1, 0],
+                m11=m[1, 1],
+                r2=r[0],
+                r4=r[1],
+                offset_x=o[0],
+                offset_y=o[1],
+            )
+        )
+        frames.append(tiles[PLACEMENT_COLUMNS])
+    return pd.concat(frames, ignore_index=True)
+
+
+def placement_from_table(table):
+    """Rebuild the `positions_merge` placement from `placement_to_table` output.
+
+    Args:
+        table (pandas.DataFrame): `PLACEMENT_COLUMNS` rows.
+
+    Returns:
+        dict: Per modality, the placement dict `tile_pixel_to_um` expects.
+    """
+    placement = {}
+    for name, rows in table.groupby("modality", sort=False):
+        first = rows.iloc[0]
+        tiles = rows[["tile", "x_pos", "y_pos", "dx", "dy", "source"]].copy()
+        tiles["tile"] = tiles["tile"].astype("int64")
+        placement[name] = {
+            "pixel_size": float(first["pixel_size"]),
+            "dimensions": (int(first["height"]), int(first["width"])),
+            "orientation": (
+                bool(first["flipud"]),
+                bool(first["fliplr"]),
+                int(first["rot90"]),
+            ),
+            "matrix": np.array(
+                [[first["m00"], first["m01"]], [first["m10"], first["m11"]]],
+                dtype=float,
+            ),
+            "radial": np.array([first["r2"], first["r4"]], dtype=float),
+            "offset": np.array([first["offset_x"], first["offset_y"]], dtype=float),
+            "tiles": tiles.set_index("tile"),
+        }
+    return placement
+
+
 def orient_local(i, j, dimensions, flipud=False, fliplr=False, rot90=0):
     """Map local pixel coordinates the way `augment_tile` maps the tile image.
 
