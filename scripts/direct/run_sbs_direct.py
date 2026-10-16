@@ -940,8 +940,27 @@ def process_sbs(config, args):
             )
             for (plate, well), _ in tile_combos.groupby(["plate", "well"])
         ]
-        # ponytail: ~11 GB peak per 5-6 M-read well (4 workers OOM'd a 32 GB VM); raise with RAM.
-        errs += run_parallel(tasks, _annotate_reads_one, min(w, 2), "Annotate reads")
+        # In-process on purpose: combine already wrote parquet in this process, and forking polars after that deadlocks the children (CI direct leg hung 2026-10-16). Per-well ≈ 20 s, so no pool needed.
+        ok = skip = err = 0
+        t0 = time.time()
+        print(f"\n  Annotate reads: {len(tasks)} tasks, in-process")
+        with monitor_step("Annotate reads"):
+            for t in tasks:
+                status, msg = _annotate_reads_one(t)
+                if status == "ok":
+                    ok += 1
+                elif status == "skip":
+                    skip += 1
+                else:
+                    err += 1
+                    print(f"    ERR: {msg}")
+                print(
+                    f"    [{ok + skip + err}/{len(tasks)}] {time.time() - t0:.0f}s  new={ok} skip={skip} err={err}"
+                )
+        elapsed = time.time() - t0
+        print(f"  Annotate reads: done in {elapsed:.1f}s")
+        print(f"  PERF: Annotate reads: {len(tasks)} tasks, in-process, {elapsed:.1f}s")
+        errs += err
 
     # --- Steps 15-16: Eval per plate ---
     print(f"\n  Eval per plate...")
