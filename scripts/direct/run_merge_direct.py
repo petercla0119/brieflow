@@ -1,8 +1,9 @@
 """Direct merge runner — bypasses Snakemake DAG build.
 
-Runs the FAST merge chain in-process for one or more wells, mirroring the
-snakemake merge scripts exactly (fast_alignment -> fast_merge -> format_merge
--> deduplicate_merge -> final_merge). Written to match the run_*_direct.py
+Runs the merge chain in-process for one or more wells, mirroring the snakemake
+merge scripts exactly: `fast` (fast_alignment -> fast_merge) or `positions`
+(positions_merge, which also writes the fitted per-tile placement), then the
+shared format_merge -> deduplicate_merge -> final_merge. Written to match the run_*_direct.py
 pattern used for preprocess/sbs/phenotype (submit as a single sbatch job so we
 don't flood the scheduler).
 
@@ -150,6 +151,8 @@ class Paths:
 
     fast_alignment = property(lambda s: s._merge_parq("fast_alignment"))
     fast_merge = property(lambda s: s._merge_parq("fast_merge"))
+    positions_merge = property(lambda s: s._merge_parq("positions_merge"))
+    positions_placement = property(lambda s: s._merge_parq("positions_placement"))
     merge_formatted = property(lambda s: s._merge_parq("merge_formatted"))
     merge_deduplicated = property(lambda s: s._merge_parq("merge_deduplicated"))
     merge_final = property(lambda s: s._merge_parq("merge_final"))
@@ -314,12 +317,80 @@ def step_fast_merge(cfg, paths, force):
     log(f"fast_merge: wrote {len(merge_data)} merged cells -> {paths.fast_merge}")
 
 
+def step_positions_merge(cfg, paths, plate, well, force):
+    """`positions` approach: one step in place of fast_alignment + fast_merge.
+
+    Mirrors scripts/merge/positions_merge.py with image QC off; writes the merge
+    table and the fitted placement (camera model + per-tile shifts).
+    """
+    if (
+        paths.positions_merge.exists()
+        and paths.positions_placement.exists()
+        and not force
+    ):
+        log(f"skip positions_merge (exists): {paths.positions_merge}")
+        return
+    from lib.merge.positions_merge import filter_tile_metadata, placement_to_table
+    from lib.merge.positions_overlay import positions_merge_well
+
+    for key in ("threshold", "phenotype_dimensions", "sbs_dimensions"):
+        if cfg.get(key) is None:
+            raise ValueError(f"Required merge config parameter '{key}' is not set")
+    log("positions_merge: loading metadata + cell info")
+    ph_meta = filter_tile_metadata(
+        validate_dtypes(read_parquet(paths.ph_metadata)),
+        channel=cfg.get("ph_metadata_channel"),
+    )
+    sbs_meta = filter_tile_metadata(
+        validate_dtypes(read_parquet(paths.sbs_metadata)),
+        cycle=cfg.get("sbs_metadata_cycle"),
+        channel=cfg.get("sbs_metadata_channel"),
+    )
+    ph_info = validate_dtypes(read_parquet(paths.ph_info))
+    sbs_info = validate_dtypes(read_parquet(paths.sbs_info))
+
+    log("positions_merge: fitting camera model + tile shifts, matching cells")
+    merge_data, merge_qc, placement, _, _ = positions_merge_well(
+        ph_info,
+        sbs_info,
+        ph_meta,
+        sbs_meta,
+        plate=plate,
+        well=well,
+        phenotype_dimensions=cfg["phenotype_dimensions"],
+        sbs_dimensions=cfg["sbs_dimensions"],
+        threshold=cfg["threshold"],
+        flipud=cfg.get("flipud", False),
+        fliplr=cfg.get("fliplr", False),
+        rot90=cfg.get("rot90", 0),
+        phenotype_pixel_size=cfg.get("phenotype_pixel_size"),
+        sbs_pixel_size=cfg.get("sbs_pixel_size"),
+        alignment={
+            "metadata_align": cfg.get("metadata_align", False),
+            "flip_x": cfg.get("alignment_flip_x"),
+            "flip_y": cfg.get("alignment_flip_y"),
+            "rotate_90": cfg.get("alignment_rotate_90"),
+        },
+    )
+    status = merge_qc["status"].iloc[0]
+    log(f"positions_merge: {len(merge_data)} matches, status={status}")
+    if status != "ok":
+        log(f"WARNING: positions merge status is {status}")
+    write_parquet(merge_data, paths.positions_merge)
+    write_parquet(placement_to_table(placement), paths.positions_placement)
+    log(
+        f"positions_merge: wrote {paths.positions_merge} and {paths.positions_placement}"
+    )
+
+
 def step_format_merge(cfg, paths, force):
     if paths.merge_formatted.exists() and not force:
         log(f"skip format_merge (exists): {paths.merge_formatted}")
         return
     log("format_merge: formatting + attaching SBS genotype + channel mins")
-    merge_data = validate_dtypes(read_parquet(paths.fast_merge))
+    approach = cfg.get("approach", "fast")
+    merge_table = paths.positions_merge if approach == "positions" else paths.fast_merge
+    merge_data = validate_dtypes(read_parquet(merge_table))
     sbs_cells = validate_dtypes(read_parquet(paths.sbs_cells))
     ph_min = validate_dtypes(read_parquet(paths.ph_cp_min))
 
@@ -350,7 +421,7 @@ def step_format_merge(cfg, paths, force):
         on=["tile", "cell_0"],
     )
 
-    if cfg.get("approach", "fast") == "fast":
+    if approach in ("fast", "positions"):
         ph_meta = pd.read_parquet(paths.ph_metadata)
         sbs_meta = pd.read_parquet(paths.sbs_metadata)
         mf = attach_global_pixel_coords(mf, ph_meta, ph_dims, suffix="0")
@@ -420,10 +491,14 @@ def run_well(cfg, out_root, plate, well, workers, force):
     log(f"===== MERGE well plate={plate} well={well} =====")
     paths = Paths(out_root, plate, well)
     _ensure_dirs(paths)
-    with monitor_step("fast_alignment"):
-        step_fast_alignment(cfg, paths, plate, well, workers, force)
-    with monitor_step("fast_merge"):
-        step_fast_merge(cfg, paths, force)
+    if cfg.get("approach", "fast") == "positions":
+        with monitor_step("positions_merge"):
+            step_positions_merge(cfg, paths, plate, well, force)
+    else:
+        with monitor_step("fast_alignment"):
+            step_fast_alignment(cfg, paths, plate, well, workers, force)
+        with monitor_step("fast_merge"):
+            step_fast_merge(cfg, paths, force)
     with monitor_step("format_merge"):
         step_format_merge(cfg, paths, force)
     with monitor_step("deduplicate_merge"):
@@ -433,11 +508,23 @@ def run_well(cfg, out_root, plate, well, workers, force):
     log(f"===== DONE well plate={plate} well={well} -> {paths.merge_final} =====")
 
 
+SUPPORTED_APPROACHES = ("fast", "positions")
+
+
+def _check_approach(cfg):
+    approach = cfg.get("approach", "fast")
+    if approach not in SUPPORTED_APPROACHES:
+        raise SystemExit(
+            f"run_merge_direct implements the fast and positions chains; config approach={approach}"
+        )
+    return approach
+
+
 def main():
     import yaml
 
     ap = argparse.ArgumentParser(
-        description="Direct merge runner (fast chain, bypasses Snakemake)"
+        description="Direct merge runner (fast or positions chain, bypasses Snakemake)"
     )
     ap.add_argument("--config", required=True)
     ap.add_argument(
@@ -453,10 +540,7 @@ def main():
 
     config = yaml.safe_load(open(args.config))
     cfg = config.get("merge", {})
-    if cfg.get("approach", "fast") != "fast":
-        raise SystemExit(
-            f"run_merge_direct only implements the fast chain; config approach={cfg.get('approach')}"
-        )
+    _check_approach(cfg)
     out_root = Path(config["all"]["root_fp"])
     set_benchmark_context(
         "merge",
