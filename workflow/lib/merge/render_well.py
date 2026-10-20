@@ -12,7 +12,9 @@ Canvas convention: pixel (row, col) covers
 convert between micrometres and fractional pixel indices (pixel centres at integers).
 """
 
+import shutil
 from functools import lru_cache
+from pathlib import Path
 
 import dask.array as da
 import numpy as np
@@ -220,6 +222,14 @@ def write_well_zarr(
         info = np.iinfo(dtype)
         stack = da.clip(da.rint(stack), info.min, info.max)
     stack = stack.astype(dtype)
+    # write_image_omezarr derives each pyramid level from the dask graph it is
+    # given, so a lazy render would be recomputed once per level. Render level 0
+    # once into a scratch store and hand the writer a zarr-backed array instead.
+    scratch = Path(str(out_path) + ".render.tmp")
+    if scratch.exists():
+        shutil.rmtree(scratch)
+    da.to_zarr(stack, str(scratch), overwrite=True)
+    stack = da.from_zarr(str(scratch))
     write_image_omezarr(
         stack,
         str(out_path),
@@ -243,4 +253,5 @@ def write_well_zarr(
     attrs.update(extra_attrs or {})
     group = zarr.open_group(str(out_path), mode="a")
     group.attrs["positions_canvas"] = attrs
+    shutil.rmtree(scratch, ignore_errors=True)
     return geo
