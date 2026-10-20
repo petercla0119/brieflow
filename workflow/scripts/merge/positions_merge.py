@@ -1,6 +1,6 @@
 from lib.shared.file_utils import validate_dtypes
 from lib.shared.parquet_io import read_parquet, write_parquet
-from lib.merge.positions_merge import filter_tile_metadata
+from lib.merge.positions_merge import filter_tile_metadata, placement_to_table
 from lib.merge.positions_overlay import positions_merge_well, save_figures
 
 for _param_name in ["threshold", "phenotype_dimensions", "sbs_dimensions"]:
@@ -33,7 +33,7 @@ if snakemake.params.image_qc:
         },
     }
 
-merge_data, merge_qc, _, image_records, figures = positions_merge_well(
+merge_data, merge_qc, placement, image_records, figures = positions_merge_well(
     phenotype_info,
     sbs_info,
     phenotype_metadata,
@@ -67,7 +67,10 @@ if merge_qc["status"].iloc[0] != "ok":
     print(f"WARNING: positions merge status is {merge_qc['status'].iloc[0]}")
 
 write_parquet(merge_data, snakemake.output[0])
+# Fitted placement (camera model + per-tile shifts): what a whole-well mosaic or
+# viewer needs to map tile pixels to the well frame. Empty table when no fit.
+write_parquet(placement_to_table(placement), snakemake.output[1])
 if templates is not None:
-    merge_qc.to_csv(snakemake.output[1], sep="\t", index=False)
-    image_records.to_csv(snakemake.output[2], sep="\t", index=False)
-    save_figures(figures, snakemake.output[3:6])
+    merge_qc.to_csv(snakemake.output[2], sep="\t", index=False)
+    image_records.to_csv(snakemake.output[3], sep="\t", index=False)
+    save_figures(figures, snakemake.output[4:7])

@@ -19,6 +19,9 @@ MERGE_OUTPUTS = {
         MERGE_FP / "parquets" / get_filename(
             {"plate": "{plate}", "well": "{well}"}, "positions_merge", "parquet"
         ),
+        MERGE_FP / "parquets" / get_filename(
+            {"plate": "{plate}", "well": "{well}"}, "positions_placement", "parquet"
+        ),
     ]
     + (
         [
