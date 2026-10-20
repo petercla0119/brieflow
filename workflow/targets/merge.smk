@@ -120,6 +120,14 @@ MERGE_OUTPUTS = {
             {"plate": "{plate}"}, "cell_merge_summaries", "tsv"
         ),  # [1] - aggregated cell merge summaries (stitch only)
     ],
+    "render_well": [
+        MERGE_FP / "images" / get_filename(
+            {"plate": "{plate}", "well": "{well}"}, "phenotype_well", "zarr"
+        ),
+        MERGE_FP / "images" / get_filename(
+            {"plate": "{plate}", "well": "{well}"}, "sbs_well", "zarr"
+        ),
+    ],
     "format_merge": [
         MERGE_FP / "parquets" / get_filename(
             {"plate": "{plate}", "well": "{well}"}, "merge_formatted", "parquet"
@@ -177,6 +185,7 @@ MERGE_OUTPUT_MAPPINGS = {
     "fast_alignment": None,
     "fast_merge": None,
     "positions_merge": None,
+    "render_well": None,
     "estimate_stitch_phenotype": temp,
     "estimate_stitch_sbs": temp,
     "stitch_phenotype": [temp, None, temp, temp],

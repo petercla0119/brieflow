@@ -95,7 +95,8 @@ def render_chunk(placement, geometry, read_tile, row0, col0, shape, order=1):
         placement (dict): One modality's placement.
         geometry (dict): From `canvas_geometry`.
         read_tile (callable): tile id -> 2D plane (any numeric dtype).
-        row0, col0 (int): Block origin in canvas pixels.
+        row0 (int): First canvas row of the block.
+        col0 (int): First canvas column of the block.
         shape (tuple): Block (rows, cols).
         order (int): Interpolation order for `map_coordinates` (1 = bilinear).
 
@@ -151,6 +152,33 @@ def render_well(placement, read_tile, chunk=2048, geometry=None):
 
     template = da.zeros((rows, cols), chunks=(chunk, chunk), dtype=np.float32)
     return da.map_blocks(_block, template, dtype=np.float32)
+
+
+def channel_readers(image_paths, channels, cycle=0):
+    """{channel name: read_tile} over per-tile aligned-image paths.
+
+    Args:
+        image_paths (dict): {tile: path} for one modality (see `tile_image_paths`).
+        channels (dict): {channel name: channel index}.
+        cycle (int): Cycle index for SBS stacks.
+
+    Returns:
+        dict: In `channels` order, each value a callable tile -> 2D plane.
+    """
+    from lib.merge.positions_overlay import read_plane
+
+    def reader(index):
+        return lambda tile: read_plane(image_paths[tile], channel=index, cycle=cycle)
+
+    return {name: reader(index) for name, index in channels.items()}
+
+
+def render_channels(cfg, modality, dapi_index):
+    """Channels to render for a modality: `merge.render_well_channels` or DAPI only."""
+    configured = (cfg.get("render_well_channels") or {}).get(modality)
+    if configured:
+        return {str(k): int(v) for k, v in dict(configured).items()}
+    return {"DAPI": int(dapi_index or 0)}
 
 
 def write_well_zarr(
