@@ -58,9 +58,10 @@ def test_row_count_preserved_with_q_min():
 
 
 # 2. indeterminant is exactly the NA leg of the ternary
-def test_indeterminant_complements_no_recomb():
+def test_indeterminant_complements_recomb_barcode_matches():
     out = _annotated()
-    nr = out["no_recomb"]
+    nr = out["recomb_barcode_matches"]
+    assert "no_recomb" not in out.columns  # upstream name stays on cells.parquet only
     assert str(nr.dtype) == "boolean"
     assert str(out["indeterminant"].dtype) == "boolean"
     assert (out["indeterminant"] == nr.isna()).all()
@@ -76,14 +77,14 @@ def test_low_q_recomb_is_indeterminant():
     row = out.loc[READ_LOW_Q_RECOMB]
     assert row["mapped"]
     assert row["Q_recomb"] < MULTI_PARAMS["recomb_q_thresh"]
-    assert pd.isna(row["no_recomb"])
+    assert pd.isna(row["recomb_barcode_matches"])
     assert row["indeterminant"]
     # and the unmapped read is indeterminant for the other reason
     assert not out.loc[READ_UNMAPPED, "mapped"]
     assert out.loc[READ_UNMAPPED, "indeterminant"]
     # the clean read is a real call
-    assert out.loc[READ_CLEAN, "no_recomb"] is not pd.NA
-    assert out.loc[READ_CLEAN, "no_recomb"]
+    assert out.loc[READ_CLEAN, "recomb_barcode_matches"] is not pd.NA
+    assert out.loc[READ_CLEAN, "recomb_barcode_matches"]
     assert not out.loc[READ_CLEAN, "indeterminant"]
 
 
@@ -97,7 +98,9 @@ def test_corrected_and_correction_cycle():
     assert fixed["correction_cycle"] == 5  # 0-idx position 4 + map_start 1
     assert fixed["prefix_map"] == "AAAAAAAAAAAA"
     assert fixed["pre_correction_prefix_map"] == "AAAAGAAAAAAA"
-    assert fixed["no_recomb"]  # recomb intact once the map barcode is fixed
+    assert fixed[
+        "recomb_barcode_matches"
+    ]  # recomb intact once the map barcode is fixed
     clean = out.loc[READ_CLEAN]
     assert not clean["corrected"]
     assert pd.isna(clean["correction_cycle"])
@@ -112,7 +115,9 @@ def test_prefix_recomb_never_corrected():
     assert off["mapped"]
     assert not off["corrected"]
     assert off["prefix_recomb"] == "CGA"  # observed, one base off expected CGT
-    assert off["no_recomb"] is not pd.NA and not off["no_recomb"]
+    assert (
+        off["recomb_barcode_matches"] is not pd.NA and not off["recomb_barcode_matches"]
+    )
     assert not off["indeterminant"]
     # across every read the recomb column is the raw slice of cycles 13-15
     raw = make_reads().set_index("read")["barcode"].str[12:15]
@@ -131,7 +136,7 @@ def test_no_recomb_reason_partitions_the_ternary():
         "low_q_recomb",
         "no_expectation",
     }
-    assert ((reason == "called") == out["no_recomb"].notna()).all()
+    assert ((reason == "called") == out["recomb_barcode_matches"].notna()).all()
     assert ((reason != "called") == out["indeterminant"]).all()
     assert reason.loc[READ_UNMAPPED] == "unmapped"
     assert reason.loc[READ_LOW_Q_RECOMB] == "low_q_recomb"
@@ -142,7 +147,7 @@ def test_no_recomb_reason_partitions_the_ternary():
     lib.loc[lib["prefix_map"] == "CCCCCCCCCCCC", "prefix_recomb"] = None
     out2 = annotate_reads(make_reads(), lib, **ANNOT_PARAMS).set_index("read")
     assert out2.loc[READ_RECOMB_OFF, "no_recomb_reason"] == "no_expectation"
-    assert pd.isna(out2.loc[READ_RECOMB_OFF, "no_recomb"])
+    assert pd.isna(out2.loc[READ_RECOMB_OFF, "recomb_barcode_matches"])
     assert out2.loc[READ_RECOMB_OFF, "indeterminant"]
     # simple mode: recomb detection is off, every read is disabled
     reads_s, lib_s = make_simple_inputs()

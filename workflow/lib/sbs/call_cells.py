@@ -251,13 +251,16 @@ def annotate_reads(
     has one row per input read (the q_min filter is recorded as `passed_q_min`).
 
     New columns beyond the ones call_cells already computed internally
-    (prefix_map, prefix_recomb, Q_recomb, mapped, no_recomb, pre_correction_*):
+    (prefix_map, prefix_recomb, Q_recomb, mapped, pre_correction_*):
+        recomb_barcode_matches  boolean  call_cells' internal no_recomb, renamed:
+                                   recomb barcode matches the library expectation
+                                   (True / False / <NA>)
         passed_q_min      bool     Q_min >= q_min
-        indeterminant     boolean  no_recomb is <NA> (unmapped, Q_recomb below
-                                   threshold, or no library expectation)
+        indeterminant     boolean  recomb_barcode_matches is <NA> (unmapped,
+                                   Q_recomb below threshold, or no library expectation)
         no_recomb_reason  str      called | unmapped | low_q_recomb |
                                    no_expectation | disabled (not multi mode);
-                                   'called' iff no_recomb is not <NA>
+                                   'called' iff recomb_barcode_matches is not <NA>
         corrected         boolean  error correction changed the mapping barcode
         correction_cycle  Int64    absolute 1-indexed cycle of the corrected base;
                                    <NA> when not corrected
@@ -268,7 +271,7 @@ def annotate_reads(
             columns=cols
             + [
                 "mapped",
-                "no_recomb",
+                "recomb_barcode_matches",
                 "no_recomb_reason",
                 "passed_q_min",
                 "indeterminant",
@@ -295,7 +298,8 @@ def annotate_reads(
         distance_metric=distance_metric,
         **kwargs,
     )
-    return df
+    # Fork-only per-read file gets its own name; call_cells keeps upstream no_recomb_*.
+    return df.rename(columns={"no_recomb": "recomb_barcode_matches"})
 
 
 def call_cells(
