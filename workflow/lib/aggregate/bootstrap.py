@@ -75,6 +75,65 @@ def _get_bootstrap_inner():
     return _bootstrap_inner_numba
 
 
+def prepare_control_pools(
+    controls_arr: np.ndarray,
+) -> Tuple[List[np.ndarray], np.ndarray]:
+    """Split controls into per-control-id pools, each sorted per feature.
+
+    Args:
+        controls_arr (np.ndarray): (n_rows, 1 + n_features); column 0 is the control id.
+
+    Returns:
+        Tuple[List[np.ndarray], np.ndarray]: per-pool (n_pool, n_features) arrays sorted
+            along axis 0, and the pool sizes (sampling weights).
+    """
+    control_ids = controls_arr[:, 0]
+    features = controls_arr[:, 1:].astype(np.float64)
+    pools = [
+        np.sort(features[control_ids == cid], axis=0) for cid in np.unique(control_ids)
+    ]
+    sizes = np.array([len(pool) for pool in pools], dtype=np.int64)
+    return pools, sizes
+
+
+def beta_quantile_null(
+    pools: List[np.ndarray],
+    sizes: np.ndarray,
+    sample_size: int,
+    num_sims: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Null medians without resampling, via the order-statistic identity.
+
+    The median of ``sample_size`` i.i.d. draws from a pool's empirical distribution F is
+    F^-1(U) with U ~ Beta((n+1)/2, (n+1)/2) (exact for odd n). One Beta draw plus one
+    indexed lookup into the pre-sorted pool replaces an n-cell resample and a median.
+    Pools are chosen with probability proportional to size, matching the resampler's
+    "pick a random control row, use its pool" semantics.
+
+    Args:
+        pools (List[np.ndarray]): Per-pool features sorted along axis 0 (prepare_control_pools).
+        sizes (np.ndarray): Pool sizes.
+        sample_size (int): Cells per simulated construct.
+        num_sims (int): Number of simulated medians.
+        rng (np.random.Generator): Random generator.
+
+    Returns:
+        np.ndarray: (num_sims, n_features) null medians.
+    """
+    n_features = pools[0].shape[1]
+    pool_idx = rng.choice(len(pools), size=num_sims, p=sizes / sizes.sum())
+    a = (sample_size + 1) / 2
+    u = rng.beta(a, a, size=(num_sims, n_features))
+    null_medians = np.empty((num_sims, n_features), dtype=np.float64)
+    for p_i in np.unique(pool_idx):
+        rows = np.flatnonzero(pool_idx == p_i)
+        pool = pools[p_i]
+        k = np.minimum((u[rows] * len(pool)).astype(np.int64), len(pool) - 1)
+        null_medians[rows] = np.take_along_axis(pool, k, axis=0)
+    return null_medians
+
+
 def get_construct_features(
     construct_id: str, construct_features_arr: np.ndarray
 ) -> np.ndarray:
