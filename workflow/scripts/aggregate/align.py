@@ -75,6 +75,7 @@ gc.collect()
 
 ## Step 2: Per-file alignment
 
+metadata_cols += ["perturbation_score", "perturbation_auc"]
 writer = None
 for i, (path, subset_df) in enumerate(
     read_parquet_frames(non_empty_paths, columns=keep_cols)
@@ -86,7 +87,6 @@ for i, (path, subset_df) in enumerate(
     # CALCULATE PERTURBATION SCORE
     subset_df["perturbation_score"] = np.nan
     subset_df["perturbation_auc"] = np.nan
-    metadata_cols += ["perturbation_score", "perturbation_auc"]
     if not snakemake.params.skip_perturbation_score:
         perturbation_score(
             subset_df,
