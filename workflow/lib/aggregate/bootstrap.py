@@ -9,14 +9,12 @@ p-value calculation at both construct and gene levels.
 import numpy as np
 import pandas as pd
 import random
-import numba
 from pathlib import Path
 from typing import Tuple, List, Dict, Any, Optional, Union
 from scipy.stats import false_discovery_control
 
 
-@numba.njit(cache=True)
-def _bootstrap_inner_numba(
+def _bootstrap_inner(
     controls_features: np.ndarray,
     pool_lookup: np.ndarray,
     pool_starts: np.ndarray,
@@ -62,6 +60,19 @@ def _bootstrap_inner_numba(
         for j in range(n_features):
             null_medians[i, j] = np.median(sample[:, j])
     return null_medians
+
+
+_bootstrap_inner_numba = None
+
+
+def _get_bootstrap_inner():
+    # numba is imported lazily: it pins a NumPy ceiling, and only the resampler needs it.
+    global _bootstrap_inner_numba
+    if _bootstrap_inner_numba is None:
+        import numba
+
+        _bootstrap_inner_numba = numba.njit(cache=True)(_bootstrap_inner)
+    return _bootstrap_inner_numba
 
 
 def get_construct_features(
@@ -313,7 +324,7 @@ def run_construct_bootstrap(
     for p, (s, e) in enumerate(zip(pool_starts, pool_ends)):
         pool_lookup[s:e] = p
 
-    null_medians_arr = _bootstrap_inner_numba(
+    null_medians_arr = _get_bootstrap_inner()(
         controls_features_sorted,
         pool_lookup,
         pool_starts,
