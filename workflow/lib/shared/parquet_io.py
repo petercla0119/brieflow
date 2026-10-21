@@ -24,6 +24,8 @@ from typing import Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 try:
     import polars as pl
@@ -139,3 +141,82 @@ def write_parquet(
         pl.from_pandas(df).write_parquet(str(path))
     else:
         df.to_parquet(path, index=False)
+
+
+def _float32_schema(schema: pa.Schema) -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field(f.name, pa.float32(), f.nullable)
+            if pa.types.is_float64(f.type)
+            else f
+            for f in schema
+        ],
+        metadata=schema.metadata,
+    )
+
+
+def columns_without_nulls(paths: Sequence[Union[str, Path]]) -> list[str]:
+    """Columns with zero nulls across all files, from parquet statistics only (no data read).
+
+    Equivalent to ``pd.concat(frames).dropna(axis=1).columns`` for files whose writer
+    recorded null counts; a column with missing statistics is kept.
+    """
+    schema = pq.read_schema(paths[0])
+    has_null = set()
+    for path in paths:
+        md = pq.read_metadata(path)
+        for rg in range(md.num_row_groups):
+            for i in range(md.num_columns):
+                col = md.row_group(rg).column(i)
+                stats = col.statistics
+                if stats is not None and stats.null_count:
+                    has_null.add(col.path_in_schema)
+    return [name for name in schema.names if name not in has_null]
+
+
+def read_parquet_frames(
+    paths: Sequence[Union[str, Path]],
+    columns: Optional[list[str]] = None,
+    float32: bool = True,
+):
+    """Yield ``(path, DataFrame)`` for each non-empty file, one file in memory at a time.
+
+    float64 columns are cast to float32 in Arrow before the pandas conversion, so the
+    frame never exists at double width. Use instead of ``Dataset.scanner().take`` for
+    batching: ``take`` decodes the whole dataset whatever the index count.
+    """
+    for path in paths:
+        pf = pq.ParquetFile(path)
+        if pf.metadata.num_rows == 0:
+            continue
+        table = pf.read(columns=columns)
+        if float32:
+            table = table.cast(_float32_schema(table.schema))
+        yield path, table.to_pandas()
+
+
+def sample_parquet_rows(
+    paths: Sequence[Union[str, Path]],
+    n_rows: int,
+    seed: Optional[int] = 0,
+    columns: Optional[list[str]] = None,
+    float32: bool = True,
+) -> pd.DataFrame:
+    """Uniform random sample of ``n_rows`` across files, reading one file at a time."""
+    paths = [p for p in paths if pq.read_metadata(p).num_rows > 0]
+    sizes = np.array([pq.read_metadata(p).num_rows for p in paths])
+    total = int(sizes.sum())
+    n_rows = min(n_rows, total)
+    rng = np.random.default_rng(seed)
+    picked = np.sort(rng.choice(total, size=n_rows, replace=False))
+    offsets = np.concatenate([[0], np.cumsum(sizes)])
+    frames = []
+    for path, start, end in zip(paths, offsets[:-1], offsets[1:]):
+        local = picked[(picked >= start) & (picked < end)] - start
+        if len(local) == 0:
+            continue
+        table = pq.read_table(path, columns=columns).take(pa.array(local))
+        if float32:
+            table = table.cast(_float32_schema(table.schema))
+        frames.append(table.to_pandas())
+    return pd.concat(frames, ignore_index=True)

@@ -1,10 +1,8 @@
 import gc
-import math
 
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pyarrow.dataset as ds
 import pandas as pd
 import numpy as np
 from pandas.api.types import is_numeric_dtype
@@ -12,6 +10,7 @@ from pandas.api.types import is_numeric_dtype
 from lib.aggregate.align import prepare_alignment_data, centerscale_on_controls
 from lib.aggregate.cell_data_utils import load_metadata_cols, split_cell_data
 from lib.aggregate.bootstrap import create_pseudogene_groups
+from lib.shared.parquet_io import read_parquet_frames
 
 # Validate required params
 for _param_name in ["perturbation_name_col", "control_key", "metadata_cols_fp"]:
@@ -22,7 +21,6 @@ for _param_name in ["perturbation_name_col", "control_key", "metadata_cols_fp"]:
 pert_col = snakemake.params.perturbation_name_col
 pert_id_col = snakemake.params.perturbation_id_col or pert_col
 control_key = snakemake.params.control_key
-num_batches = snakemake.params.num_align_batches
 
 # Load cell data using PyArrow dataset (lazy - no data loaded yet)
 print("Loading cell data as PyArrow dataset...")
@@ -38,13 +36,11 @@ if len(non_empty_paths) == 0:
     pd.DataFrame().to_csv(snakemake.output[2], sep="\t", index=False)
     exit(0)
 
-cell_dataset = ds.dataset(non_empty_paths, format="parquet")
-
 # Determine columns
-cell_data_cols = cell_dataset.schema.names
+cell_data_cols = pq.read_schema(non_empty_paths[0]).names
 use_classifier = snakemake.params.use_classifier
 metadata_cols = load_metadata_cols(snakemake.params.metadata_cols_fp, use_classifier)
-feature_cols = [col for col in cell_dataset.schema.names if col not in metadata_cols]
+feature_cols = [col for col in cell_data_cols if col not in metadata_cols]
 
 # Filter metadata_cols to only include columns that exist in the parquet
 existing_metadata_cols = [col for col in metadata_cols if col in cell_data_cols]
@@ -53,37 +49,16 @@ print(
     f"Number of metadata columns: {len(existing_metadata_cols)} | Number of feature columns: {len(feature_cols)}"
 )
 
-# Count total rows
-total_rows = cell_dataset.count_rows()
-print(f"Total rows across all parquet files: {total_rows}")
-
-# Create random indices for batched processing (like align.py)
-np.random.seed(0)
-all_indices = np.random.permutation(total_rows)
-chunk_size = math.ceil(total_rows / num_batches)
-subset_indices = [
-    all_indices[i * chunk_size : (i + 1) * chunk_size] for i in range(num_batches)
-]
-
-print(f"Processing data in {num_batches} batch(es), ~{chunk_size} rows per batch")
-
 # Initialize outputs
 aligned_output = snakemake.output[0]
 writer = None
+num_batches = len(non_empty_paths)
 
-# Process each batch
-for batch_idx, indices in enumerate(subset_indices):
-    print(
-        f"\n=== Processing batch {batch_idx + 1}/{num_batches} with {len(indices)} cells ==="
-    )
-
-    # Load only this batch using .scanner().take() (like align.py)
-    indices_sorted = np.sort(indices)  # Sort for efficient reading
-    batch_df = (
-        cell_dataset.scanner(columns=existing_metadata_cols + feature_cols)
-        .take(pa.array(indices_sorted))
-        .to_pandas(use_threads=True)
-    )
+# One file (one well) at a time: Dataset.scanner().take() decodes every file in full.
+for batch_idx, (path, batch_df) in enumerate(
+    read_parquet_frames(non_empty_paths, columns=existing_metadata_cols + feature_cols)
+):
+    print(f"\n=== Processing file {batch_idx + 1}/{num_batches}: {path} ===")
     print(f"Loaded batch shape: {batch_df.shape}")
 
     # Convert numerical columns to float32

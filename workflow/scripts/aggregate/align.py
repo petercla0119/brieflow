@@ -1,10 +1,8 @@
-import math
 import gc
 import warnings
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pyarrow.dataset as ds
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
 from sklearn.decomposition import PCA
@@ -17,6 +15,11 @@ from lib.aggregate.align import (
     tvn_on_controls,
 )
 from lib.aggregate.perturbation_score import perturbation_score
+from lib.shared.parquet_io import (
+    columns_without_nulls,
+    read_parquet_frames,
+    sample_parquet_rows,
+)
 
 warnings.filterwarnings(
     "ignore", category=UserWarning, module="sklearn.feature_selection"
@@ -44,23 +47,15 @@ if len(non_empty_paths) == 0:
     pq.write_table(pa.table({}), snakemake.output[0])
     exit(0)
 
-# Load full dataset as logical PyArrow dataset (only non-empty files)
-cell_dataset = ds.dataset(non_empty_paths, format="parquet")
-total_rows = cell_dataset.count_rows()
+# One file (one well) is read at a time: Dataset.scanner().take() decodes every
+# row of every file regardless of how many indices it is given.
+keep_cols = columns_without_nulls(non_empty_paths)
 print(
-    f"Number of rows across {len(non_empty_paths)} non-empty parquet files: {total_rows}"
+    f"{len(non_empty_paths)} non-empty parquet files; {len(keep_cols)} columns without nulls"
 )
 
-# Choose random row indices
-n_sample = min(PCA_SUBSET, total_rows)
-random_indices = np.random.choice(total_rows, size=n_sample, replace=False)
-random_indices.sort()
-
-# load sample df
-sample_df = cell_dataset.scanner().take(random_indices)
-sample_df = sample_df.to_pandas(use_threads=True, memory_pool=None)
-
 # load sample df as pandas dataframe
+sample_df = sample_parquet_rows(non_empty_paths, PCA_SUBSET, seed=0, columns=keep_cols)
 use_classifier = snakemake.params.use_classifier
 metadata_cols = load_metadata_cols(snakemake.params.metadata_cols_fp, use_classifier)
 metadata, features = split_cell_data(sample_df, metadata_cols)
@@ -75,27 +70,17 @@ metadata, features = prepare_alignment_data(
 pca = PCA(n_components=snakemake.params.variance_or_ncomp).fit(
     centerscale_by_batch(features, metadata, "batch_values")
 )
+del sample_df
+gc.collect()
 
-## Step 2: Batched alignment
+## Step 2: Per-file alignment
 
-# Determine subset indices
-num_align_batches = snakemake.params.num_align_batches
-all_indices = np.random.permutation(total_rows)
-chunk_size = math.ceil(total_rows / num_align_batches)
-subset_indices = [
-    all_indices[i * chunk_size : (i + 1) * chunk_size] for i in range(num_align_batches)
-]
-
-# Process each batch
 writer = None
-for i, indices in enumerate(subset_indices):
-    print(f"Processing subset {i + 1}/{num_align_batches} with {len(indices)} cells")
-
-    subset_df = (
-        cell_dataset.scanner()
-        .take(pa.array(indices))
-        .to_pandas(use_threads=True, memory_pool=None)
-        .dropna(axis=1)
+for i, (path, subset_df) in enumerate(
+    read_parquet_frames(non_empty_paths, columns=keep_cols)
+):
+    print(
+        f"Processing file {i + 1}/{len(non_empty_paths)} with {len(subset_df)} cells: {path}"
     )
 
     # CALCULATE PERTURBATION SCORE

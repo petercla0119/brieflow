@@ -1,9 +1,7 @@
 import random
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pyarrow.parquet as pq
-import pyarrow.dataset as ds
 
 plt.rcParams.update(
     {
@@ -16,6 +14,7 @@ from lib.aggregate.eval_aggregate import (
     nas_summary,
     plot_feature_distributions,
 )
+from lib.shared.parquet_io import sample_parquet_rows
 
 SUBSET_SIZE = 100000
 
@@ -36,15 +35,8 @@ if len(non_empty_split) == 0:
     plt.close(fig)
     exit(0)
 
-merge_data = ds.dataset(non_empty_split, format="parquet")
-total_rows = merge_data.count_rows()
-# Choose random row indices
-n_sample = min(SUBSET_SIZE, total_rows)
-random_indices = np.random.choice(total_rows, size=n_sample, replace=False)
-random_indices.sort()
-# Load subset
-merge_data = merge_data.scanner().take(random_indices)
-merge_data = merge_data.to_pandas(use_threads=True, memory_pool=None)
+# One file at a time: Dataset.scanner().take() decodes every file in full.
+merge_data = sample_parquet_rows(non_empty_split, SUBSET_SIZE, seed=None, float32=False)
 
 # Evaluate missing values
 nas_df, nas_fig = nas_summary(merge_data, vis_subsample=50000)
@@ -52,15 +44,9 @@ nas_df.to_csv(snakemake.output[0], sep="\t", index=False)
 nas_fig.savefig(snakemake.output[1], dpi=300, bbox_inches="tight", transparent=True)
 
 # Get aligned dataset
-aligned_data = ds.dataset(snakemake.input[0], format="parquet")
-# Choose random row indices
-total_rows = aligned_data.count_rows()
-n_sample = min(SUBSET_SIZE, total_rows)
-random_indices = np.random.choice(total_rows, size=n_sample, replace=False)
-random_indices.sort()
-# Load subset
-aligned_data = aligned_data.scanner().take(random_indices)
-aligned_data = aligned_data.to_pandas(use_threads=True, memory_pool=None)
+aligned_data = sample_parquet_rows(
+    [snakemake.input[0]], SUBSET_SIZE, seed=None, float32=False
+)
 
 # determine original and aligned columns
 random.seed(42)
