@@ -73,10 +73,15 @@ pca = PCA(n_components=snakemake.params.variance_or_ncomp).fit(
 del sample_df
 gc.collect()
 
-## Step 2: Per-file alignment
+## Step 2: Per-file PCA embedding
+# Raw features are the memory problem (thousands of columns); the PCA embeddings are
+# small enough to hold for every cell, so TVN below runs once over all cells — the
+# per-batch TVN refits PCA() on each batch's own controls, which gives every batch a
+# different width and rotation.
 
 metadata_cols += ["perturbation_score", "perturbation_auc"]
-writer = None
+metadata_chunks = []
+embedding_chunks = []
 for i, (path, subset_df) in enumerate(
     read_parquet_frames(non_empty_paths, columns=keep_cols)
 ):
@@ -113,30 +118,34 @@ for i, (path, subset_df) in enumerate(
     )
 
     features = centerscale_by_batch(features, metadata, "batch_values")
-
-    features = pca.transform(features)
-
-    features = tvn_on_controls(
-        features,
-        metadata,
-        snakemake.params.perturbation_name_col,
-        snakemake.params.control_key,
-        "batch_values",
-        control_col=snakemake.params.control_name_col,
-    )
-
-    feature_columns = [f"PC_{j}" for j in range(features.shape[1])]
-    features = pd.DataFrame(features, index=metadata.index, columns=feature_columns)
-    aligned_cell_data = pd.concat([metadata, features], axis=1)
+    embedding_chunks.append(pca.transform(features).astype(np.float32))
+    metadata_chunks.append(metadata)
     del features
     gc.collect()
 
-    # Convert to Arrow table and write chunk
-    aligned_cell_data = pa.Table.from_pandas(aligned_cell_data, preserve_index=False)
-    if writer is None:
-        writer = pq.ParquetWriter(snakemake.output[0], aligned_cell_data.schema)
-    writer.write_table(aligned_cell_data)
+## Step 3: TVN over all cells, then write
 
-# Close writer
-if writer is not None:
-    writer.close()
+metadata = pd.concat(metadata_chunks, ignore_index=True)
+embeddings = np.concatenate(embedding_chunks)
+del metadata_chunks, embedding_chunks
+gc.collect()
+print(f"Running TVN on {embeddings.shape[0]} cells x {embeddings.shape[1]} components")
+
+embeddings = tvn_on_controls(
+    embeddings,
+    metadata,
+    snakemake.params.perturbation_name_col,
+    snakemake.params.control_key,
+    "batch_values",
+    control_col=snakemake.params.control_name_col,
+)
+
+feature_columns = [f"PC_{j}" for j in range(embeddings.shape[1])]
+embeddings = pd.DataFrame(embeddings, index=metadata.index, columns=feature_columns)
+aligned_cell_data = pd.concat([metadata, embeddings], axis=1)
+del embeddings, metadata
+gc.collect()
+
+pq.write_table(
+    pa.Table.from_pandas(aligned_cell_data, preserve_index=False), snakemake.output[0]
+)
