@@ -42,6 +42,8 @@ COMMON = [
     # prints-COMPLETE-writes-nothing combine bug produces zero of.
     "phenotype/parquets/**/*phenotype_cp_min.parquet",
     "merge/parquets/**/*merge_final.parquet",
+    # per-plate eval_merge: Snakemake rule on tiff/zarr, run_merge_direct on direct (#92)
+    "merge/eval/**/*merge_summary.tsv",
 ]
 
 # leg -> (default output root, extra format-specific patterns)

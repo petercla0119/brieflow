@@ -29,6 +29,8 @@ FLAT_OUTPUTS = [
     "phenotype/parquets/P-1_W-A1__phenotype_info.parquet",
     "phenotype/parquets/P-1_W-A1__phenotype_cp_min.parquet",
     "merge/parquets/P-1_W-A1__merge_final.parquet",
+    # per-plate eval_merge (#92): P-{plate}__ flat, {plate}/ nested
+    "merge/eval/P-1__merge_summary.tsv",
 ]
 
 # extract_phenotype writes per-tile phenotype_cp parquets alongside the per-well
@@ -52,12 +54,18 @@ PER_TILE_NOISE = {
 }
 
 # Nested zarr naming: {plate}/{row}/{col}/name.parquet
-NESTED_OUTPUTS = [p.replace("P-1_W-A1__", "1/A/1/") for p in FLAT_OUTPUTS]
+NESTED_OUTPUTS = [
+    p.replace("P-1_W-A1__", "1/A/1/").replace("P-1__", "1/") for p in FLAT_OUTPUTS
+]
 
 
 def write_parquet(path, rows=1):
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"label": list(range(rows))}).to_parquet(path)
+    df = pd.DataFrame({"label": list(range(rows))})
+    if path.suffix == ".tsv":
+        df.to_csv(path, sep="\t", index=False)
+    else:
+        df.to_parquet(path)
 
 
 def write_tiff(root):
