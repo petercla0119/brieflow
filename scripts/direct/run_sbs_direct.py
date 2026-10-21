@@ -1000,44 +1000,40 @@ def process_sbs(config, args):
                         ].iterrows()
                     ]
                     stats_paths = [p for p in stats_paths if Path(p).exists()]
-                    if strict_eval and not stats_paths:
-                        raise FileNotFoundError("no per-tile segmentation_stats.tsv")
+                    wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                    cells_paths = [
+                        sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet")
+                        for w in wells
+                    ]
+                    cells_paths = [p for p in cells_paths if Path(p).exists()]
+
+                    md_loc = make_loc(fmt, plate)
+                    md_paths = []
+                    for w in wells:
+                        mp = str(
+                            pp_meta_fp
+                            / "metadata"
+                            / "sbs"
+                            / get_data_output_path(
+                                make_loc(fmt, plate, w),
+                                "combined_metadata",
+                                "parquet",
+                                fmt,
+                            )
+                        )
+                        if Path(mp).exists():
+                            md_paths.append(mp)
+                    if strict_eval and not (stats_paths and cells_paths and md_paths):
+                        raise FileNotFoundError(
+                            f"segmentation_stats {len(stats_paths)} tiles, "
+                            f"cells parquets {len(cells_paths)}/{len(wells)}, "
+                            f"combined_metadata {len(md_paths)}/{len(wells)}"
+                        )
 
                     if stats_paths:
                         overview_df = segmentation_overview(stats_paths)
                         Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
                         overview_df.to_csv(overview_out, sep="\t", index=False)
-
-                        wells = tile_combos[tile_combos["plate"] == plate][
-                            "well"
-                        ].unique()
-                        cells_paths = [
-                            sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet")
-                            for w in wells
-                        ]
-                        cells_paths = [p for p in cells_paths if Path(p).exists()]
-
-                        md_loc = make_loc(fmt, plate)
-                        md_paths = []
-                        for w in wells:
-                            mp = str(
-                                pp_meta_fp
-                                / "metadata"
-                                / "sbs"
-                                / get_data_output_path(
-                                    make_loc(fmt, plate, w),
-                                    "combined_metadata",
-                                    "parquet",
-                                    fmt,
-                                )
-                            )
-                            if Path(mp).exists():
-                                md_paths.append(mp)
-                        if strict_eval and not (cells_paths and md_paths):
-                            raise FileNotFoundError(
-                                f"cells parquets {len(cells_paths)}/{len(wells)}, "
-                                f"sbs combined_metadata {len(md_paths)}/{len(wells)}"
-                            )
 
                         if cells_paths and md_paths:
                             cells_df = read_parquets(
