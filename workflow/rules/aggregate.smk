@@ -73,7 +73,6 @@ rule generate_feature_table:
         perturbation_id_col=config.get("aggregate", {}).get("perturbation_id_col"),
         control_key=config.get("aggregate", {}).get("control_key"),
         batch_cols=config.get("aggregate", {}).get("batch_cols", ["plate", "well"]),
-        num_align_batches=config.get("aggregate", {}).get("num_align_batches", 1),
         feature_normalization=config.get("aggregate", {}).get("feature_normalization", "standard"),
         pseudogene_patterns=config.get("aggregate", {}).get("pseudogene_patterns", None),
     script:
@@ -102,7 +101,6 @@ rule align:
         batch_cols=config.get("aggregate", {}).get("batch_cols", ["plate", "well"]),
         variance_or_ncomp=config.get("aggregate", {}).get("variance_or_ncomp", 0.99),
         control_key=config.get("aggregate", {}).get("control_key"),
-        num_align_batches=config.get("aggregate", {}).get("num_align_batches", 1),
         skip_perturbation_score=config.get("aggregate", {}).get("skip_perturbation_score", True),
         control_name_col=config.get("aggregate", {}).get("control_name_col"),
     script:
