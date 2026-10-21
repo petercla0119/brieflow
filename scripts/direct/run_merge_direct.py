@@ -153,6 +153,11 @@ class Paths:
     fast_merge = property(lambda s: s._merge_parq("fast_merge"))
     positions_merge = property(lambda s: s._merge_parq("positions_merge"))
     positions_placement = property(lambda s: s._merge_parq("positions_placement"))
+
+    def well_image(self, modality):
+        """Per-well mosaic zarr rendered from the positions placement (#88)."""
+        return self._parq("merge/images", f"{modality}_well").with_suffix(".zarr")
+
     merge_formatted = property(lambda s: s._merge_parq("merge_formatted"))
     merge_deduplicated = property(lambda s: s._merge_parq("merge_deduplicated"))
     merge_final = property(lambda s: s._merge_parq("merge_final"))
@@ -487,7 +492,43 @@ def step_final_merge(cfg, paths, force):
     log(f"final_merge: done -> {paths.merge_final}")
 
 
-def run_well(cfg, out_root, plate, well, workers, force):
+def step_render_well(cfg, config, paths, out_root, plate, well, force):
+    """Render the whole well per modality from the positions placement (opt-in)."""
+    outputs = {m: paths.well_image(m) for m in ("phenotype", "sbs")}
+    if all(p.exists() for p in outputs.values()) and not force:
+        log(f"skip render_well (exists): {outputs['phenotype']}")
+        return
+    from lib.merge.positions_merge import placement_from_table
+    from lib.merge.positions_overlay import image_path_templates, tile_image_paths
+    from lib.merge.render_well import channel_readers, render_channels, write_well_zarr
+
+    placement = placement_from_table(read_parquet(paths.positions_placement))
+    templates = image_path_templates(
+        out_root, config.get("all", {}).get("image_format", "tiff")
+    )
+    for modality, out_path in outputs.items():
+        place = placement[modality]
+        tile_paths = tile_image_paths(
+            templates["images"][modality], place["tiles"].index, plate, well
+        )
+        dapi = config.get(modality, {}).get("dapi_index")
+        channels = render_channels(cfg, modality, dapi)
+        log(
+            f"render_well: {modality} {len(tile_paths)}/{len(place['tiles'])} tiles, channels {list(channels)} -> {out_path}"
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        write_well_zarr(
+            place,
+            channel_readers(tile_paths, channels),
+            out_path,
+            max_levels=int(config.get("all", {}).get("zarr_max_levels", 5)),
+            compression=config.get("all", {}).get("zarr_compression"),
+            extra_attrs={"modality": modality, "plate": str(plate), "well": str(well)},
+        )
+    log("render_well: done")
+
+
+def run_well(cfg, out_root, plate, well, workers, force, config=None):
     log(f"===== MERGE well plate={plate} well={well} =====")
     paths = Paths(out_root, plate, well)
     _ensure_dirs(paths)
@@ -505,6 +546,9 @@ def run_well(cfg, out_root, plate, well, workers, force):
         step_deduplicate_merge(cfg, paths, force)
     with monitor_step("final_merge"):
         step_final_merge(cfg, paths, force)
+    if cfg.get("approach", "fast") == "positions" and cfg.get("render_well", False):
+        with monitor_step("render_well"):
+            step_render_well(cfg, config or {}, paths, out_root, plate, well, force)
     log(f"===== DONE well plate={plate} well={well} -> {paths.merge_final} =====")
 
 
@@ -560,7 +604,13 @@ def main():
     log(f"Processing {len(combos)} well(s) from {combo_fp}")
     for _, row in combos.iterrows():
         run_well(
-            cfg, out_root, row["plate"], str(row["well"]), args.workers, args.force
+            cfg,
+            out_root,
+            row["plate"],
+            str(row["well"]),
+            args.workers,
+            args.force,
+            config=config,
         )
     log("ALL WELLS COMPLETE")
 

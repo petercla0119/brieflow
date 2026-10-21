@@ -140,6 +140,27 @@ if merge_approach == "positions":
             "../scripts/merge/positions_merge.py"
 
 
+    if config.get("merge", {}).get("render_well", False):
+        rule render_well:
+            input:
+                MERGE_OUTPUTS["positions_merge"][1],
+            output:
+                directory(MERGE_OUTPUTS_MAPPED["render_well"][0]),
+                directory(MERGE_OUTPUTS_MAPPED["render_well"][1]),
+            params:
+                plate=lambda wildcards: wildcards.plate,
+                well=lambda wildcards: wildcards.well,
+                root_fp=str(ROOT_FP),
+                image_format=IMG_FMT,
+                render_well_channels=config.get("merge", {}).get("render_well_channels"),
+                phenotype_dapi_index=config.get("phenotype", {}).get("dapi_index"),
+                sbs_dapi_index=config.get("sbs", {}).get("dapi_index"),
+                compression=config.get("all", {}).get("zarr_compression"),
+                max_levels=config.get("all", {}).get("zarr_max_levels", 5),
+            script:
+                "../scripts/merge/render_well.py"
+
+
 if merge_approach == "stitch":
     rule estimate_stitch_phenotype:
         input:
