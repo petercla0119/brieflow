@@ -123,18 +123,16 @@ print(f"\nSaved aligned cell data to: {aligned_output}")
 print("\n=== Creating construct-level table ===")
 
 lf = pl.scan_parquet(aligned_output)
-construct_agg = (
-    lf.group_by(pert_id_col)
-    .agg(
-        [pl.first(pert_col).alias(pert_col), pl.len().alias("cell_count")]
-        + [pl.median(c).alias(c) for c in feature_cols]
-    )
-    .collect()
-    .to_pandas()
-)
-construct_table = construct_agg[
-    [pert_id_col, pert_col, "cell_count"] + feature_cols
-].copy()
+# With no perturbation_id_col configured the id and name columns are the same
+# column; polars rejects aggregating the group key under its own name.
+id_cols = [pert_id_col] if pert_id_col == pert_col else [pert_id_col, pert_col]
+construct_aggs = [pl.len().alias("cell_count")] + [
+    pl.median(c).alias(c) for c in feature_cols
+]
+if pert_id_col != pert_col:
+    construct_aggs.insert(0, pl.first(pert_col).alias(pert_col))
+construct_agg = lf.group_by(pert_id_col).agg(construct_aggs).collect().to_pandas()
+construct_table = construct_agg[id_cols + ["cell_count"] + feature_cols].copy()
 construct_table["cell_count"] = construct_table["cell_count"].astype(int)
 
 print(f"Construct table shape: {construct_table.shape}")
