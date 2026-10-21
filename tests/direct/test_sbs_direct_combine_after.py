@@ -72,6 +72,12 @@ def test_post_seg_skips_combine_on_partial_tile_set():
     assert rsd.combine_after("post-seg", True) is False
 
 
+def test_eval_never_combines():
+    # --step eval regenerates steps 15-16 from existing well parquets; it must not rebuild them
+    assert rsd.combine_after("eval", False) is False
+    assert rsd.combine_after("eval", True) is False
+
+
 def test_combine_only_unchanged():
     # --step combine is called directly by run_sbs_combine_both.sh; keep it working
     assert rsd.combine_after("combine", False) is True

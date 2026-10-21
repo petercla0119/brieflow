@@ -93,18 +93,26 @@ class Paths:
             / c
             / "combined_metadata.parquet"
         )
-        if zarr_probe.exists():
+        self.nested = zarr_probe.exists()
+        if self.nested:
             stem = f"{plate}/{r}/{c}"
-            self._parq = (
-                lambda subdir, name: self.root / subdir / stem / f"{name}.parquet"
+            self._parq = lambda subdir, name: (
+                self.root / subdir / stem / f"{name}.parquet"
             )
             self._tsv = lambda subdir, name: self.root / subdir / stem / f"{name}.tsv"
+            # plate-level eval mirrors sbs/phenotype: merge/eval/{plate}/name.ext
+            self._plate = lambda name, ext: (
+                self.root / "merge/eval" / str(plate) / f"{name}.{ext}"
+            )
         else:
             pfx = f"P-{plate}_W-{well}__"
-            self._parq = (
-                lambda subdir, name: self.root / subdir / f"{pfx}{name}.parquet"
+            self._parq = lambda subdir, name: (
+                self.root / subdir / f"{pfx}{name}.parquet"
             )
             self._tsv = lambda subdir, name: self.root / subdir / f"{pfx}{name}.tsv"
+            self._plate = lambda name, ext: (
+                self.root / "merge/eval" / f"P-{plate}__{name}.{ext}"
+            )
 
     # inputs
     @property
@@ -164,6 +172,10 @@ class Paths:
     dedup_stats = property(lambda s: s._merge_eval("deduplication_stats"))
     final_sbs_rates = property(lambda s: s._merge_eval("final_sbs_matching_rates"))
     final_ph_rates = property(lambda s: s._merge_eval("final_phenotype_matching_rates"))
+
+    def plate_eval(self, name, ext):
+        """Per-plate eval_merge output (same names as the Snakemake rule)."""
+        return self._plate(name, ext)
 
 
 def _ensure_dirs(paths):
@@ -528,6 +540,197 @@ def step_render_well(cfg, config, paths, out_root, plate, well, force):
     log("render_well: done")
 
 
+EVAL_MERGE_OUTPUTS = (
+    ("merge_summary", "tsv"),
+    ("sbs_to_ph_matching_rates", "tsv"),
+    ("sbs_to_ph_matching_rates", "png"),
+    ("ph_to_sbs_matching_rates", "tsv"),
+    ("ph_to_sbs_matching_rates", "png"),
+    ("all_cells_by_channel_min", "png"),
+    ("cells_with_channel_min_0", "png"),
+    ("dedup_summaries", "tsv"),
+)
+
+
+def step_eval_merge(out_root, plate, wells, force):
+    """Per-plate eval_merge (workflow/scripts/merge/eval_merge.py), same outputs.
+
+    Reads every well of the plate, so it runs once after all wells -- never per
+    well. Every input must exist: a missing one raises instead of silently
+    producing a partial plate (#92).
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from lib.shared.parquet_io import read_parquets
+    from lib.merge.eval_merge import plot_sbs_ph_matching_heatmap, plot_cell_positions
+
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": [
+                "Arial",
+                "Nimbus Sans",
+                "Liberation Sans",
+                "DejaVu Sans",
+            ],
+        }
+    )
+
+    wells = [str(w) for w in wells]
+    paths = {w: Paths(out_root, plate, w) for w in wells}
+    first = paths[wells[0]]
+    outputs = {k: first.plate_eval(*k) for k in EVAL_MERGE_OUTPUTS}
+    if all(o.exists() for o in outputs.values()) and not force:
+        log(f"skip eval_merge (exists): {outputs[('merge_summary', 'tsv')]}")
+        return
+
+    inputs = {
+        "merge_deduplicated": [paths[w].merge_deduplicated for w in wells],
+        "merge_formatted": [paths[w].merge_formatted for w in wells],
+        "sbs_cells": [paths[w].sbs_cells for w in wells],
+        "sbs_info": [paths[w].sbs_info for w in wells],
+        "ph_cp_min": [paths[w].ph_cp_min for w in wells],
+        "ph_info": [paths[w].ph_info for w in wells],
+        "sbs_metadata": [paths[w].sbs_metadata for w in wells],
+        "ph_metadata": [paths[w].ph_metadata for w in wells],
+        "dedup_stats": [paths[w].dedup_stats for w in wells],
+    }
+    missing = [str(p) for ps in inputs.values() for p in ps if not p.exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"eval_merge plate {plate}: {len(missing)} missing input(s):\n  "
+            + "\n  ".join(missing)
+        )
+
+    log(f"eval_merge: plate {plate}, {len(wells)} wells")
+    merge_deduplicated = validate_dtypes(read_parquets(inputs["merge_deduplicated"]))
+    merge_formatted = validate_dtypes(read_parquets(inputs["merge_formatted"]))
+    sbs_cells = validate_dtypes(read_parquets(inputs["sbs_cells"]))
+    sbs_info = validate_dtypes(read_parquets(inputs["sbs_info"]))
+    phenotype_min_cp = validate_dtypes(read_parquets(inputs["ph_cp_min"]))
+    phenotype_info = validate_dtypes(read_parquets(inputs["ph_info"]))
+    sbs_metadata = pd.concat(
+        [pd.read_parquet(p) for p in inputs["sbs_metadata"]], ignore_index=True
+    ).drop_duplicates(subset=["well", "tile"])
+    phenotype_metadata = pd.concat(
+        [pd.read_parquet(p) for p in inputs["ph_metadata"]], ignore_index=True
+    ).drop_duplicates(subset=["well", "tile"])
+    dedup_stats = {w: pd.read_csv(paths[w].dedup_stats, sep="\t") for w in wells}
+
+    merge_deduplicated["mapped_single_gene"] = merge_deduplicated.apply(
+        lambda x: identify_single_gene_mappings(x), axis=1
+    )
+
+    rows = []
+    for well in sorted(merge_deduplicated["well"].unique()):
+        well_merge = merge_deduplicated[merge_deduplicated["well"] == well]
+        well_dedup = dedup_stats.get(well)
+        if well_dedup is not None and "Initial" in well_dedup["stage"].values:
+            matched_raw = int(
+                well_dedup[well_dedup["stage"] == "Initial"]["total_cells"].iloc[0]
+            )
+        else:
+            matched_raw = len(well_merge)
+        ph_cells = len(phenotype_info[phenotype_info["well"] == well])
+        sbs_cells_count = len(sbs_info[sbs_info["well"] == well])
+        unique_ph_in_merge = (
+            well_merge[["plate", "well", "tile", "site", "cell_0"]]
+            .drop_duplicates()
+            .shape[0]
+        )
+        unique_sbs_in_merge = (
+            well_merge[["plate", "well", "tile", "cell_1"]].drop_duplicates().shape[0]
+        )
+        rows.append(
+            {
+                "well": well,
+                "ph_cells": ph_cells,
+                "sbs_cells": sbs_cells_count,
+                "matched_raw": matched_raw,
+                "total_match_pairs": len(well_merge),
+                "unique_ph_in_merge": unique_ph_in_merge,
+                "unique_sbs_in_merge": unique_sbs_in_merge,
+                "ph_recovery_rate": round(unique_ph_in_merge / ph_cells, 3)
+                if ph_cells > 0
+                else 0,
+                "sbs_recovery_rate": (
+                    round(unique_sbs_in_merge / sbs_cells_count, 3)
+                    if sbs_cells_count > 0
+                    else 0
+                ),
+                "dist_mean": round(well_merge["distance"].mean(), 2),
+                "dist_median": round(well_merge["distance"].median(), 2),
+                "cells_with_barcode": int(well_merge["gene_symbol_0"].notna().sum()),
+                "single_gene_count": int(well_merge["mapped_single_gene"].sum()),
+                "single_gene_rate": round(well_merge["mapped_single_gene"].mean(), 3),
+            }
+        )
+
+    for o in outputs.values():
+        o.parent.mkdir(parents=True, exist_ok=True)
+
+    def _png(fig, key):
+        fig.savefig(outputs[key], dpi=300, bbox_inches="tight", transparent=True)
+        plt.close(fig)
+
+    pd.DataFrame(rows).to_csv(outputs[("merge_summary", "tsv")], sep="\t", index=False)
+
+    merge_minimal = merge_formatted[
+        ["plate", "well", "tile", "site", "cell_0", "cell_1", "distance"]
+    ]
+    sbs_summary, fig = plot_sbs_ph_matching_heatmap(
+        merge_minimal,
+        sbs_info.rename(columns={"cell": "cell_1"}),
+        target="sbs",
+        metadata=sbs_metadata,
+        return_summary=True,
+    )
+    sbs_summary.to_csv(
+        outputs[("sbs_to_ph_matching_rates", "tsv")], sep="\t", index=False
+    )
+    _png(fig, ("sbs_to_ph_matching_rates", "png"))
+
+    ph_summary, fig = plot_sbs_ph_matching_heatmap(
+        merge_minimal,
+        phenotype_info.rename(columns={"cell": "cell_0"}),
+        target="phenotype",
+        metadata=phenotype_metadata,
+        return_summary=True,
+    )
+    ph_summary.to_csv(
+        outputs[("ph_to_sbs_matching_rates", "tsv")], sep="\t", index=False
+    )
+    _png(fig, ("ph_to_sbs_matching_rates", "png"))
+
+    _png(
+        plot_cell_positions(merge_deduplicated, title="All Cells by Channel Min"),
+        ("all_cells_by_channel_min", "png"),
+    )
+    _png(
+        plot_cell_positions(
+            merge_deduplicated.query("channels_min==0"),
+            title="Cells with Channel Min = 0",
+            color="red",
+        ),
+        ("cells_with_channel_min_0", "png"),
+    )
+
+    dedup_dfs = [df.assign(well=w) for w, df in dedup_stats.items()]
+    dedup_summaries = pd.concat(dedup_dfs, ignore_index=True)
+    dedup_summaries["stage"] = pd.Categorical(
+        dedup_summaries["stage"],
+        categories=["Initial", "After SBS dedup", "After phenotype dedup"],
+        ordered=True,
+    )
+    dedup_summaries = dedup_summaries.sort_values(["well", "stage"]).reset_index(
+        drop=True
+    )
+    dedup_summaries.to_csv(outputs[("dedup_summaries", "tsv")], sep="\t", index=False)
+    log(f"eval_merge: done -> {outputs[('merge_summary', 'tsv')].parent}")
+
+
 def run_well(cfg, out_root, plate, well, workers, force, config=None):
     log(f"===== MERGE well plate={plate} well={well} =====")
     paths = Paths(out_root, plate, well)
@@ -576,7 +779,13 @@ def main():
     )
     ap.add_argument("--plate-filter", type=int, default=None)
     ap.add_argument("--well-filter", default=None)
-    ap.add_argument("--step", choices=["all"], default="all")
+    ap.add_argument(
+        "--step",
+        choices=["all", "eval"],
+        default="all",
+        help="all=per-well chain then per-plate eval_merge (eval skipped under --well-filter); "
+        "eval=per-plate eval_merge only, from existing outputs (#92)",
+    )
     ap.add_argument(
         "--force", action="store_true", help="recompute even if outputs exist"
     )
@@ -601,18 +810,40 @@ def main():
     if combos.empty:
         raise SystemExit("No (plate, well) combos to process after filtering")
 
-    log(f"Processing {len(combos)} well(s) from {combo_fp}")
-    for _, row in combos.iterrows():
-        run_well(
-            cfg,
-            out_root,
-            row["plate"],
-            str(row["well"]),
-            args.workers,
-            args.force,
-            config=config,
-        )
-    log("ALL WELLS COMPLETE")
+    if args.step == "eval" and args.well_filter is not None:
+        raise SystemExit("--step eval is per plate; drop --well-filter")
+
+    if args.step == "all":
+        log(f"Processing {len(combos)} well(s) from {combo_fp}")
+        for _, row in combos.iterrows():
+            run_well(
+                cfg,
+                out_root,
+                row["plate"],
+                str(row["well"]),
+                args.workers,
+                args.force,
+                config=config,
+            )
+        log("ALL WELLS COMPLETE")
+        if args.well_filter is not None:
+            log(
+                "eval_merge skipped: --well-filter set (eval needs every well of the plate)"
+            )
+            return
+
+    # per-plate eval over every well in the combo for that plate
+    errs = 0
+    for plate, grp in combos.groupby("plate", sort=True):
+        try:
+            with monitor_step("eval_merge"):
+                step_eval_merge(out_root, plate, list(grp["well"]), args.force)
+        except Exception as e:
+            log(f"ERR eval_merge plate {plate}: {e}")
+            errs += 1
+    if errs:
+        raise SystemExit(f"eval_merge failed for {errs} plate(s)")
+    log("EVAL COMPLETE")
 
 
 if __name__ == "__main__":
