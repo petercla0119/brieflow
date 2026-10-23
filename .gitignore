@@ -19,3 +19,5 @@ tests/small_test_analysis/small_test_data/
 tests/small_test_analysis/config/*.dill
 !tests/small_test_analysis/config/dummy_classifier.dill
 tests/small_test_analysis/config/regen_dummy_classifier.py
+
+*.png
