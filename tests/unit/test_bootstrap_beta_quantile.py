@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from workflow.lib.aggregate.bootstrap import (  # noqa: E402
     beta_quantile_null,
+    bootstrap_gene,
     calculate_pvals,
     prepare_control_pools,
 )
@@ -136,3 +137,33 @@ def test_pool_choice_is_weighted_by_size():
     )
     frac_small = np.mean(bq[:, 0] < 0)
     assert abs(frac_small - 0.1) < 0.01
+
+
+@pytest.mark.unit
+def test_bootstrap_gene_skips_small_constructs_and_is_deterministic():
+    rng = np.random.default_rng(7)
+    controls = make_controls(rng)
+    pools, sizes = prepare_control_pools(controls)
+    feats = controls[:, 1:].astype(np.float64)
+    null_like = np.median(feats, axis=0)
+    constructs = [
+        ("sg1", 40, null_like),  # looks like a control
+        ("sg2", 60, null_like + 50.0),  # far outside every pool
+        ("sg3", 10, null_like),  # below MIN_CELLS: not tested
+    ]
+    out = [
+        bootstrap_gene(
+            pools, sizes, constructs, null_like, 5_000, np.random.default_rng(8)
+        )
+        for _ in range(2)
+    ]
+    rows, gene_p, n_used = out[0]
+
+    assert n_used == 2 and rows[2][2] is None
+    assert np.all(rows[1][2] == 0.0)  # +50 beats every null draw
+    assert np.all(rows[0][2] > 0.05)
+    assert gene_p.shape == (3,)
+    # same seed -> identical p-values
+    for a, b in zip(rows, out[1][0]):
+        assert (a[2] is None and b[2] is None) or np.array_equal(a[2], b[2])
+    assert np.array_equal(gene_p, out[1][1])

@@ -1,78 +1,15 @@
 """Bootstrap statistical testing for perturbation effects.
 
-This module provides functionality for performing bootstrap statistical tests
-to validate perturbation effects detected in the aggregate pipeline. It includes
-functions for data preparation, feature selection, bootstrap simulation, and
-p-value calculation at both construct and gene levels.
+Construct nulls come from the beta-quantile shortcut (no resampling, nothing persisted);
+the gene null is the elementwise median across the gene's construct nulls. P-values are
+two-tailed empirical; FDR correction is applied over all features at once.
 """
 
 import numpy as np
 import pandas as pd
 import random
-from pathlib import Path
 from typing import Tuple, List, Dict, Any, Optional, Union
 from scipy.stats import false_discovery_control
-
-
-def _bootstrap_inner(
-    controls_features: np.ndarray,
-    pool_lookup: np.ndarray,
-    pool_starts: np.ndarray,
-    pool_ends: np.ndarray,
-    sample_size: int,
-    num_sims: int,
-) -> np.ndarray:
-    """Inner JIT loop for run_construct_bootstrap.
-
-    Pre-Python equivalent: pick a random row from `controls_features` to seed
-    the pool, then sample `sample_size` rows with replacement from that pool,
-    and take the median per feature. Repeat `num_sims` times.
-
-    Pulled out of `run_construct_bootstrap` so the inner loop can be Numba-
-    compiled — measured ~50× speedup over the pure-Python equivalent on
-    baker-scale construct/control sizes.
-
-    Args:
-        controls_features (np.ndarray): (n_rows, n_features) controls features,
-            sorted by control_id so each pool occupies a contiguous slice.
-        pool_lookup (np.ndarray): (n_rows,) maps each row to its pool index.
-        pool_starts (np.ndarray): Start row index of each pool.
-        pool_ends (np.ndarray): End row index (exclusive) of each pool.
-        sample_size (int): Number of rows sampled per simulation.
-        num_sims (int): Number of bootstrap simulations.
-
-    Returns:
-        np.ndarray: (num_sims, n_features) median values per simulation.
-    """
-    n_rows, n_features = controls_features.shape
-    null_medians = np.empty((num_sims, n_features), dtype=np.float64)
-    for i in range(num_sims):
-        seed_row = np.random.randint(0, n_rows)
-        pool_idx = pool_lookup[seed_row]
-        start = pool_starts[pool_idx]
-        end = pool_ends[pool_idx]
-        pool_size = end - start
-        sample = np.empty((sample_size, n_features), dtype=np.float64)
-        for k in range(sample_size):
-            row_idx = start + np.random.randint(0, pool_size)
-            for j in range(n_features):
-                sample[k, j] = controls_features[row_idx, j]
-        for j in range(n_features):
-            null_medians[i, j] = np.median(sample[:, j])
-    return null_medians
-
-
-_bootstrap_inner_numba = None
-
-
-def _get_bootstrap_inner():
-    # numba is imported lazily: it pins a NumPy ceiling, and only the resampler needs it.
-    global _bootstrap_inner_numba
-    if _bootstrap_inner_numba is None:
-        import numba
-
-        _bootstrap_inner_numba = numba.njit(cache=True)(_bootstrap_inner)
-    return _bootstrap_inner_numba
 
 
 def prepare_control_pools(
@@ -132,28 +69,6 @@ def beta_quantile_null(
         k = np.minimum((u[rows] * len(pool)).astype(np.int64), len(pool) - 1)
         null_medians[rows] = np.take_along_axis(pool, k, axis=0)
     return null_medians
-
-
-def get_construct_features(
-    construct_id: str, construct_features_arr: np.ndarray
-) -> np.ndarray:
-    """Extract feature array for a specific construct.
-
-    Args:
-        construct_id (str): Identifier for the construct.
-        construct_features_arr (np.ndarray): Array containing all construct features.
-
-    Returns:
-        np.ndarray: Feature array for the specified construct (excluding ID column).
-
-    Raises:
-        ValueError: If the construct is not found in the features array.
-    """
-    indices = np.where(construct_features_arr[:, 0] == construct_id)[0]
-    if len(indices) == 0:
-        raise ValueError(f"Construct {construct_id} not found in features array")
-    construct_arr = construct_features_arr[indices][0][1:].astype(float)
-    return construct_arr
 
 
 def create_pseudogene_groups(
@@ -247,72 +162,6 @@ def create_pseudogene_groups(
     return pseudogene_groups, remaining_constructs
 
 
-def write_construct_data(
-    construct_id: str,
-    construct_features_df: pd.DataFrame,
-    perturbation_col: str,
-    perturbation_id_col: str,
-    output_dir: Path,
-) -> None:
-    """Write construct data file for a single construct.
-
-    Args:
-        construct_id (str): Identifier for the construct.
-        construct_features_df (pd.DataFrame): DataFrame containing construct features.
-        perturbation_col (str): Name of the column containing perturbation/gene names.
-        perturbation_id_col (str): Name of the column containing perturbation IDs.
-        output_dir (Path): Directory where the construct data file will be saved.
-    """
-    # Get the gene for this construct
-    construct_row = construct_features_df[
-        construct_features_df[perturbation_id_col] == construct_id
-    ]
-    if len(construct_row) > 0:
-        gene = construct_row[perturbation_col].iloc[0]
-    else:
-        gene = "unknown"
-
-    # Create gene__construct combined ID
-    combined_id = f"{gene}__{construct_id}"
-
-    # Create metadata file for the construct
-    construct_data = pd.DataFrame(
-        {"construct_id": [construct_id], "gene": [gene], "combined_id": [combined_id]}
-    )
-
-    # Save using combined_id for filename
-    output_file = output_dir / f"{combined_id}__construct_data.tsv"
-    construct_data.to_csv(output_file, sep="\t", index=False)
-
-
-def run_single_bootstrap_simulation(
-    controls_arr: np.ndarray, sample_size: int
-) -> np.ndarray:
-    """Run a single bootstrap simulation.
-
-    Args:
-        controls_arr (np.ndarray): Array of control data where first column contains
-            identifiers and remaining columns contain features.
-        sample_size (int): Size of sample to draw for the simulation.
-
-    Returns:
-        np.ndarray: Median values from the simulation across all features.
-    """
-    random_cell_idx = np.random.choice(controls_arr.shape[0], 1, replace=False)[0]
-    control_id = controls_arr[random_cell_idx, 0]
-
-    indices = np.where(controls_arr[:, 0] == control_id)[0]
-    control_construct_arr = controls_arr[indices]
-
-    # Sample cells with replacement from this construct only
-    sample_arr = control_construct_arr[
-        np.random.choice(control_construct_arr.shape[0], sample_size, replace=True)
-    ]
-
-    # Return median (excluding ID column)
-    return np.median(sample_arr[:, 1:].astype(float), axis=0)
-
-
 def calculate_pvals(
     null_medians_arr: np.ndarray, observed_medians: np.ndarray
 ) -> np.ndarray:
@@ -337,91 +186,50 @@ def calculate_pvals(
     return pvals_two_tail
 
 
-def run_construct_bootstrap(
-    construct_id: str,
-    construct_features_arr: np.ndarray,
-    controls_arr: np.ndarray,
-    sample_size: int,
+# Constructs with fewer cells are not tested: the Beta identity is loose there and the
+# observed median is itself noise. Nontargeting pools are unaffected (they are the null).
+MIN_CELLS = 30
+
+
+def bootstrap_gene(
+    pools: List[np.ndarray],
+    sizes: np.ndarray,
+    constructs: List[Tuple[str, int, np.ndarray]],
+    gene_observed: np.ndarray,
     num_sims: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Run bootstrap analysis for a single construct.
+    rng: np.random.Generator,
+    min_cells: int = MIN_CELLS,
+) -> Tuple[List[Tuple[str, int, Optional[np.ndarray]]], Optional[np.ndarray], int]:
+    """Construct and gene p-values for one gene; nulls live only in memory.
 
     Args:
-        construct_id (str): Identifier for the construct to analyze.
-        construct_features_arr (np.ndarray): Array containing all construct features
-            where first column contains construct IDs and remaining columns contain features.
-        controls_arr (np.ndarray): Array of control data where first column contains
-            control IDs and remaining columns contain features.
-        sample_size (int): Sample size for each bootstrap simulation.
-        num_sims (int): Number of bootstrap simulations to run.
+        pools (List[np.ndarray]): Sorted per-control pools (prepare_control_pools).
+        sizes (np.ndarray): Pool sizes.
+        constructs (List[Tuple[str, int, np.ndarray]]): (id, cell count, observed medians)
+            per construct of the gene.
+        gene_observed (np.ndarray): Observed gene-level medians.
+        num_sims (int): Simulated medians per construct.
+        rng (np.random.Generator): Random generator.
+        min_cells (int): Constructs below this cell count get no p-values and do not
+            enter the gene null.
 
     Returns:
-        Tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - null_medians_arr: Array of null distribution medians from all simulations.
-              Shape: (num_sims, n_features)
-            - p_vals: Array of p-values for each feature. Shape: (n_features,)
-
-    Raises:
-        ValueError: If bootstrap simulation fails due to constant values across simulations.
+        Tuple: per-construct (id, cell count, p-values or None), gene p-values or None
+            (no construct passed min_cells), number of constructs in the gene null.
     """
-    # Get observed medians for this construct
-    observed_medians = get_construct_features(construct_id, construct_features_arr)
-
-    # Build pool ranges from control_ids (sorted to be contiguous), plus a
-    # row→pool lookup so pool selection is weighted by pool size (mirroring
-    # the original "pick a random row, use its control_id" semantics).
-    control_ids = controls_arr[:, 0]
-    controls_features = controls_arr[:, 1:].astype(np.float64)
-    sort_order = np.argsort(control_ids, kind="stable")
-    controls_features_sorted = np.ascontiguousarray(controls_features[sort_order])
-    _, counts = np.unique(control_ids[sort_order], return_counts=True)
-    pool_ends = np.cumsum(counts).astype(np.int64)
-    pool_starts = np.empty_like(pool_ends)
-    pool_starts[0] = 0
-    pool_starts[1:] = pool_ends[:-1]
-    pool_lookup = np.empty(controls_features_sorted.shape[0], dtype=np.int64)
-    for p, (s, e) in enumerate(zip(pool_starts, pool_ends)):
-        pool_lookup[s:e] = p
-
-    null_medians_arr = _get_bootstrap_inner()(
-        controls_features_sorted,
-        pool_lookup,
-        pool_starts,
-        pool_ends,
-        sample_size,
-        num_sims,
-    )
-
-    # Modified verification for single feature case
-    if null_medians_arr.shape[1] == 1:
-        # For single feature, check if all values are identical (which would be weird)
-        all_identical = len(np.unique(null_medians_arr)) == 1
-        if all_identical:
-            raise ValueError("All bootstrap simulations returned identical values")
-    else:
-        # Original verification for multiple features
-        all_same = np.max(null_medians_arr, axis=1) == np.min(null_medians_arr, axis=1)
-        if len(null_medians_arr[all_same]) > 0:
-            raise ValueError(
-                "Bootstrap simulation failed - some simulations returned constant values"
-            )
-
-    # Calculate p-values
-    p_vals = calculate_pvals(null_medians_arr, observed_medians)
-
-    return null_medians_arr, p_vals
-
-
-def load_construct_null_arrays(file_paths: List[str]) -> List[np.ndarray]:
-    """Load multiple construct null distribution arrays.
-
-    Args:
-        file_paths (List[str]): List of file paths to null distribution numpy arrays.
-
-    Returns:
-        List[np.ndarray]: List of loaded numpy arrays containing null distributions.
-    """
-    return [np.load(path, allow_pickle=False) for path in file_paths]
+    rows, nulls = [], []
+    for construct_id, sample_size, observed in constructs:
+        if sample_size < min_cells:
+            rows.append((construct_id, sample_size, None))
+            continue
+        null = beta_quantile_null(pools, sizes, sample_size, num_sims, rng)
+        rows.append((construct_id, sample_size, calculate_pvals(null, observed)))
+        nulls.append(null)
+    if not nulls:
+        return rows, None, 0
+    # Gene null = median of the construct nulls draw by draw: a sampled median of medians.
+    gene_p = calculate_pvals(np.median(np.stack(nulls), axis=0), gene_observed)
+    return rows, gene_p, len(nulls)
 
 
 def apply_multiple_hypothesis_correction(
