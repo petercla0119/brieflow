@@ -10,7 +10,7 @@ from pandas.api.types import is_numeric_dtype
 from lib.aggregate.align import prepare_alignment_data, centerscale_on_controls
 from lib.aggregate.cell_data_utils import load_metadata_cols, split_cell_data
 from lib.aggregate.bootstrap import create_pseudogene_groups
-from lib.shared.parquet_io import read_parquet_frames, common_columns
+from lib.shared.parquet_io import read_parquet_frames, common_columns, write_df
 
 # Validate required params
 for _param_name in ["perturbation_name_col", "control_key", "metadata_cols_fp"]:
@@ -32,8 +32,8 @@ non_empty_paths = [
 if len(non_empty_paths) == 0:
     print("WARNING: No cells in input, writing empty outputs")
     pd.DataFrame().to_parquet(snakemake.output[0], index=False)
-    pd.DataFrame().to_csv(snakemake.output[1], sep="\t", index=False)
-    pd.DataFrame().to_csv(snakemake.output[2], sep="\t", index=False)
+    write_df(pd.DataFrame(), snakemake.output[1])
+    write_df(pd.DataFrame(), snakemake.output[2])
     exit(0)
 
 # Determine columns
@@ -288,8 +288,8 @@ if pseudogene_patterns:
 construct_output = snakemake.output[1]
 gene_output = snakemake.output[2]
 
-construct_table.to_csv(construct_output, sep="\t", index=False)
-final_gene_table.to_csv(gene_output, sep="\t", index=False)
+write_df(construct_table, construct_output)
+write_df(final_gene_table, gene_output)
 
 print(f"\nSaved gene table to: {gene_output}")
 print(f"Saved construct table to: {construct_output}")

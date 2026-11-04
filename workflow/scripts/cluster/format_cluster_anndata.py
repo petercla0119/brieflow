@@ -1,9 +1,10 @@
 import pandas as pd
 
 from lib.cluster.format_cluster_anndata import format_cluster_anndata
+from lib.shared.parquet_io import read_df
 
 # Load inputs
-features_genes = pd.read_csv(snakemake.input.features_genes, sep="\t")
+features_genes = read_df(snakemake.input.features_genes)
 
 # Load clustering files for all resolutions
 clustering_paths = snakemake.input.clustering
@@ -27,7 +28,7 @@ try:
             if isinstance(bootstrap_path, (list, tuple))
             else bootstrap_path
         )
-        bootstrap_results = pd.read_csv(path, sep="\t")
+        bootstrap_results = read_df(path)
         print(f"Bootstrap results: {bootstrap_results.shape}")
 except (AttributeError, Exception):
     pass

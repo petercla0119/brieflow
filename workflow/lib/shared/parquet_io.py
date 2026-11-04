@@ -115,6 +115,43 @@ def read_table(path):
     return pd.read_csv(resolved, sep="\t")
 
 
+def read_df(path: Union[str, Path]) -> pd.DataFrame:
+    """Read a ``.parquet`` or ``.tsv`` table at exactly ``path`` into a pandas DataFrame.
+
+    The format is chosen by suffix; unlike :func:`read_table` no sibling file is
+    probed, so a stale copy in the other format is never picked up. An empty tsv
+    (what ``pd.DataFrame().to_csv`` writes on empty input) reads as an empty
+    frame, matching parquet.
+
+    Raises:
+        ValueError: If the suffix is neither ``.parquet`` nor ``.tsv``.
+    """
+    path = Path(path)
+    if path.suffix == ".parquet":
+        return read_parquet(path)
+    if path.suffix == ".tsv":
+        try:
+            return pd.read_csv(path, sep="\t")
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+    raise ValueError(f"Expected a .parquet or .tsv table, got {path}")
+
+
+def write_df(df: pd.DataFrame, path: Union[str, Path]) -> None:
+    """Write a pandas DataFrame as ``.parquet`` or ``.tsv``, chosen by the suffix of ``path``.
+
+    Raises:
+        ValueError: If the suffix is neither ``.parquet`` nor ``.tsv``.
+    """
+    path = Path(path)
+    if path.suffix == ".parquet":
+        write_parquet(df, path)
+    elif path.suffix == ".tsv":
+        df.to_csv(path, sep="\t", index=False)
+    else:
+        raise ValueError(f"Expected a .parquet or .tsv table, got {path}")
+
+
 def write_parquet(
     df: pd.DataFrame,
     path: Union[str, Path],

@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import glob
 from lib.aggregate.bootstrap import apply_multiple_hypothesis_correction
+from lib.shared.parquet_io import write_df
 
 # Get directory parameters
 constructs_dir = snakemake.params.constructs_dir
@@ -66,7 +67,7 @@ print(f"Found {len(gene_feature_cols)} feature columns for gene analysis")
 gene_df_corrected = apply_multiple_hypothesis_correction(gene_df, gene_feature_cols)
 
 # Save combined results
-construct_df_corrected.to_csv(snakemake.output[0], sep="\t", index=False)
-gene_df_corrected.to_csv(snakemake.output[1], sep="\t", index=False)
+write_df(construct_df_corrected, snakemake.output[0])
+write_df(gene_df_corrected, snakemake.output[1])
 
 print("Bootstrap combination complete!")

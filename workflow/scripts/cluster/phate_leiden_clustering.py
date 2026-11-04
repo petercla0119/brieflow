@@ -14,6 +14,7 @@ from lib.cluster.phate_leiden_clustering import (
     plot_phate_leiden_clusters,
     calculate_potential_to_nontargeting,
 )
+from lib.shared.parquet_io import read_df
 
 # Validate required params
 for _param_name in ["perturbation_name_col", "control_key"]:
@@ -21,7 +22,7 @@ for _param_name in ["perturbation_name_col", "control_key"]:
         raise ValueError(f"Required config parameter '{_param_name}' is not set")
 
 # load aggregated data
-aggregated_data = pd.read_csv(snakemake.input[0], sep="\t")
+aggregated_data = read_df(snakemake.input[0])
 
 if snakemake.params.perturbation_auc_threshold is not None:
     print(
