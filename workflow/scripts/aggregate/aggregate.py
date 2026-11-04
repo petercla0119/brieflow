@@ -3,6 +3,7 @@ import pandas as pd
 
 from lib.aggregate.cell_data_utils import load_metadata_cols, split_cell_data
 from lib.aggregate.aggregate import aggregate
+from lib.shared.parquet_io import write_df
 
 # Validate required params
 for _param_name in ["metadata_cols_fp", "perturbation_name_col"]:
@@ -16,7 +17,7 @@ cell_data = ds.dataset(snakemake.input[0], format="parquet")
 # Handle empty input gracefully
 if cell_data.count_rows() == 0:
     print("WARNING: No cells in input, writing empty output")
-    pd.DataFrame().to_csv(snakemake.output[0], sep="\t", index=False)
+    write_df(pd.DataFrame(), snakemake.output[0])
     exit(0)
 
 cell_data = cell_data.to_table(use_threads=True, memory_pool=None).to_pandas()
@@ -51,4 +52,4 @@ aggregated_cell_data = (
     .sort_values("cell_count", ascending=False)
     .reset_index(drop=True)
 )
-aggregated_cell_data.to_csv(snakemake.output[0], sep="\t", index=False)
+write_df(aggregated_cell_data, snakemake.output[0])

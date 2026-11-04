@@ -14,7 +14,7 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 
 from lib.shared.file_utils import parse_filename, get_filename
-from lib.shared.parquet_io import read_parquet
+from lib.shared.parquet_io import read_df
 
 
 def find_optimal_resolution(
@@ -109,11 +109,7 @@ def find_optimal_resolution(
         max_cluster_size = 0
 
         if clustering_file.exists():
-            clustering_df = (
-                read_parquet(clustering_file)
-                if clustering_file.suffix == ".parquet"
-                else pd.read_csv(clustering_file, sep="\t")
-            )
+            clustering_df = read_df(clustering_file)
 
             # Get total genes from first clustering file
             if total_genes is None:

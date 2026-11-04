@@ -12,7 +12,7 @@ from lib.aggregate.cell_data_utils import (
     get_feature_table_cols,
 )
 from lib.aggregate.bootstrap import write_construct_data
-from lib.shared.parquet_io import read_parquet
+from lib.shared.parquet_io import read_df, read_parquet, write_df
 
 # Validate required params
 for _param_name in ["perturbation_name_col", "control_key", "metadata_cols_fp"]:
@@ -34,17 +34,15 @@ print(f"Features data shape: {all_features_cells.shape}")
 # Handle empty input gracefully
 if len(all_features_cells) == 0:
     print("WARNING: No cells in input, writing empty bootstrap outputs")
-    pd.DataFrame().to_csv(snakemake.output.controls_arr, sep="\t", index=False)
-    pd.DataFrame().to_csv(
-        snakemake.output.construct_features_arr, sep="\t", index=False
-    )
-    pd.DataFrame().to_csv(snakemake.output.sample_sizes, sep="\t", index=False)
+    write_df(pd.DataFrame(), snakemake.output.controls_arr)
+    write_df(pd.DataFrame(), snakemake.output.construct_features_arr)
+    write_df(pd.DataFrame(), snakemake.output.sample_sizes)
     Path(snakemake.output[0]).mkdir(parents=True, exist_ok=True)
     exit(0)
 
 print("Loading construct and gene tables...")
-construct_table = pd.read_csv(snakemake.input.construct_table, sep="\t")
-gene_table = pd.read_csv(snakemake.input.gene_table, sep="\t")
+construct_table = read_df(snakemake.input.construct_table)
+gene_table = read_df(snakemake.input.gene_table)
 print(f"Construct table shape: {construct_table.shape}")
 print(f"Gene table shape: {gene_table.shape}")
 
@@ -128,17 +126,13 @@ print(f"Sample sizes dataframe shape: {sample_sizes_df.shape}")
 
 # Save bootstrap arrays
 print("Saving bootstrap arrays...")
-controls_df = pd.DataFrame(controls_arr)
-controls_df.columns = [perturbation_col] + available_features
-controls_df.to_csv(snakemake.output.controls_arr, sep="\t", index=False)
-
-construct_features_df_export = pd.DataFrame(construct_features_arr)
-construct_features_df_export.columns = [perturbation_id_col] + available_features
-construct_features_df_export.to_csv(
-    snakemake.output.construct_features_arr, sep="\t", index=False
+# Written from the typed frames, not the object `.values` arrays, so parquet
+# keeps the string id column and float feature columns as such.
+write_df(controls_data, snakemake.output.controls_arr)
+write_df(
+    construct_features_df[construct_data_cols], snakemake.output.construct_features_arr
 )
-
-sample_sizes_df.to_csv(snakemake.output.sample_sizes, sep="\t", index=False)
+write_df(sample_sizes_df, snakemake.output.sample_sizes)
 
 # Create checkpoint directory and construct data files
 output_dir = Path(snakemake.output[0])

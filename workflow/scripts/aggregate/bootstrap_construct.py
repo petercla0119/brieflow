@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 
 from lib.aggregate.bootstrap import run_construct_bootstrap
+from lib.shared.parquet_io import read_df
 
 # Load construct data to get construct ID and gene
 construct_data = pd.read_csv(snakemake.input.construct_data, sep="\t")
@@ -13,13 +14,13 @@ print(f"Running bootstrap analysis for construct: {construct_id} (gene: {gene})"
 
 # Load bootstrap input arrays
 print("Loading bootstrap input arrays...")
-controls_df = pd.read_csv(snakemake.input.controls_arr, sep="\t")
+controls_df = read_df(snakemake.input.controls_arr)
 controls_arr = controls_df.values
 
-construct_features_df = pd.read_csv(snakemake.input.construct_features_arr, sep="\t")
+construct_features_df = read_df(snakemake.input.construct_features_arr)
 construct_features_arr = construct_features_df.values
 
-sample_sizes_df = pd.read_csv(snakemake.input.sample_sizes, sep="\t")
+sample_sizes_df = read_df(snakemake.input.sample_sizes)
 
 # Get feature names (excluding first column which is construct ID)
 feature_names = construct_features_df.columns[1:].tolist()

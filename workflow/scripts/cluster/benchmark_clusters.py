@@ -17,13 +17,14 @@ from lib.cluster.benchmark_clusters import (
 from lib.cluster.scrape_benchmarks import (
     filter_complexes,
 )
+from lib.shared.parquet_io import read_df
 
 # Validate required params
 for _param_name in ["perturbation_name_col", "control_key"]:
     if getattr(snakemake.params, _param_name, None) is None:
         raise ValueError(f"Required config parameter '{_param_name}' is not set")
 
-aggregated_data = pd.read_csv(snakemake.input[0], sep="\t")
+aggregated_data = read_df(snakemake.input[0])
 phate_leiden_clustering = pd.read_csv(snakemake.input[1], sep="\t")
 
 if snakemake.params.perturbation_auc_threshold is not None:

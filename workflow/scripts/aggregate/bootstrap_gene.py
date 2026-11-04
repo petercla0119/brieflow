@@ -7,6 +7,7 @@ from pathlib import Path
 
 from lib.aggregate.bootstrap import load_construct_null_arrays, calculate_pvals
 from lib.aggregate.cell_data_utils import get_feature_table_cols
+from lib.shared.parquet_io import read_df
 
 # Get parameters from wildcards
 gene_id = snakemake.wildcards.gene
@@ -41,7 +42,7 @@ print(f"Found {len(construct_null_paths)} construct null files for gene {gene_id
 construct_null_arrays = load_construct_null_arrays(construct_null_paths)
 
 # Load gene table to get observed gene values
-gene_table = pd.read_csv(snakemake.input.gene_table, sep="\t")
+gene_table = read_df(snakemake.input.gene_table)
 gene_row = gene_table[gene_table["gene_symbol_0"] == gene_id]
 
 if len(gene_row) == 0:

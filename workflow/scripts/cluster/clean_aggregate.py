@@ -1,7 +1,7 @@
-import pandas as pd
+from lib.shared.parquet_io import read_df
 
-# load aggregated data
-aggregated_data = pd.read_csv(snakemake.input[0], sep="\t")
+# load aggregated data (tsv or parquet, per aggregate.table_format)
+aggregated_data = read_df(snakemake.input[0])
 
 # filter by cell cutoff
 min_cell_cutoff = snakemake.params.min_cell_cutoffs[snakemake.params.cell_class]

@@ -4,6 +4,16 @@ from lib.shared.target_utils import map_outputs, outputs_to_targets
 
 AGGREGATE_FP = ROOT_FP / "aggregate"
 
+# Wide per-perturbation tables (feature tables, aggregated profiles, bootstrap
+# arrays and results) are parquet by default. `aggregate.table_format: tsv`
+# keeps a tree written before the switch readable without re-running aggregate.
+AGGREGATE_TABLE_FMT = config.get("aggregate", {}).get("table_format", "parquet")
+if AGGREGATE_TABLE_FMT not in ("parquet", "tsv"):
+    raise ValueError(
+        f"aggregate.table_format must be 'parquet' or 'tsv', got {AGGREGATE_TABLE_FMT!r}"
+    )
+AGGREGATE_TABLE_DIR = AGGREGATE_FP / f"{AGGREGATE_TABLE_FMT}s"
+
 # Define standard (non-montage) aggreagte outputs
 AGGREGATE_OUTPUTS = {
     "split_datasets": [
@@ -42,19 +52,17 @@ AGGREGATE_OUTPUTS = {
             "features_singlecell",
             "parquet",
         ),
-        AGGREGATE_FP
-        / "tsvs"
+        AGGREGATE_TABLE_DIR
         / get_filename(
             {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
             "features_constructs",
-            "tsv",
+            AGGREGATE_TABLE_FMT,
         ),
-        AGGREGATE_FP
-        / "tsvs"
+        AGGREGATE_TABLE_DIR
         / get_filename(
             {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
             "features_genes",
-            "tsv",
+            AGGREGATE_TABLE_FMT,
         ),
     ],
     "align": [
@@ -67,12 +75,11 @@ AGGREGATE_OUTPUTS = {
         ),
     ],
     "aggregate": [
-        AGGREGATE_FP
-        / "tsvs"
+        AGGREGATE_TABLE_DIR
         / get_filename(
             {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
             "aggregated",
-            "tsv",
+            AGGREGATE_TABLE_FMT,
         ),
     ],
     "eval_aggregate": [
@@ -214,15 +221,15 @@ BOOTSTRAP_OUTPUTS = {
     # Input arrays
     "controls_arr": AGGREGATE_FP / "bootstrap" / "inputs" / get_filename(
         {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
-        "controls_arr", "tsv"
+        "controls_arr", AGGREGATE_TABLE_FMT
     ),
     "construct_features_arr": AGGREGATE_FP / "bootstrap" / "inputs" / get_filename(
         {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
-        "construct_features_arr", "tsv"
+        "construct_features_arr", AGGREGATE_TABLE_FMT
     ),
     "sample_sizes": AGGREGATE_FP / "bootstrap" / "inputs" / get_filename(
         {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
-        "sample_sizes", "tsv"
+        "sample_sizes", AGGREGATE_TABLE_FMT
     ),
 
     # Construct-level outputs
@@ -239,11 +246,11 @@ BOOTSTRAP_OUTPUTS = {
     # Combined results
     "combined_construct_results": AGGREGATE_FP / "bootstrap" / get_filename(
         {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
-        "all_construct_bootstrap_results", "tsv"
+        "all_construct_bootstrap_results", AGGREGATE_TABLE_FMT
     ),
     "combined_gene_results": AGGREGATE_FP / "bootstrap" / get_filename(
         {"cell_class": "{cell_class}", "channel_combo": "{channel_combo}"},
-        "all_gene_bootstrap_results", "tsv"
+        "all_gene_bootstrap_results", AGGREGATE_TABLE_FMT
     ),
 }
 

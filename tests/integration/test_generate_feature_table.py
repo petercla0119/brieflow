@@ -39,11 +39,17 @@ def test_construct_table_stable():
     # matches all_construct_bootstrap_results / construct_data / construct_features_arr,
     # which carry different schemas, and glob order is filesystem-dependent -- so the
     # loose pattern asserted against whichever file the OS happened to return first.
-    construct_files = sorted(agg_dir.glob("**/*features_constructs.tsv"))
+    construct_files = sorted(
+        p
+        for ext in ("parquet", "tsv")
+        for p in agg_dir.glob(f"**/*features_constructs.{ext}")
+    )
     if not construct_files:
-        pytest.skip("No construct TSV outputs found; run the aggregate module first.")
+        pytest.skip("No construct table outputs found; run the aggregate module first.")
 
-    df = pd.read_csv(construct_files[0], sep="\t")
+    from workflow.lib.shared.parquet_io import read_df
+
+    df = read_df(construct_files[0])
     assert len(df) > 0, "Construct table is empty"
     assert "cell_count" in df.columns, "cell_count column missing from construct table"
     assert df["cell_count"].sum() > 0, "All constructs have zero cells"
