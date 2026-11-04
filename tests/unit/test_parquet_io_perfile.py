@@ -79,3 +79,12 @@ def test_sample_parquet_rows_is_a_uniform_subset(files):
     # same seed → same rows
     again = sample_parquet_rows(paths, 200, seed=1, columns=["plate", "f_clean"])
     pd.testing.assert_frame_equal(sample, again)
+
+
+def test_columns_without_nulls_uses_only_shared_columns(tmp_path):
+    a = tmp_path / "a.parquet"
+    b = tmp_path / "b.parquet"
+    pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]}).to_parquet(a)
+    pd.DataFrame({"x": [5.0, 6.0]}).to_parquet(b)
+    assert columns_without_nulls([a, b]) == ["x"]
+    assert columns_without_nulls([b, a]) == ["x"]
