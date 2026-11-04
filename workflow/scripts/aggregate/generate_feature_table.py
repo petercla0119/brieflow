@@ -10,7 +10,7 @@ from pandas.api.types import is_numeric_dtype
 from lib.aggregate.align import prepare_alignment_data, centerscale_on_controls
 from lib.aggregate.cell_data_utils import load_metadata_cols, split_cell_data
 from lib.aggregate.bootstrap import create_pseudogene_groups
-from lib.shared.parquet_io import read_parquet_frames
+from lib.shared.parquet_io import read_parquet_frames, common_columns
 
 # Validate required params
 for _param_name in ["perturbation_name_col", "control_key", "metadata_cols_fp"]:
@@ -37,7 +37,7 @@ if len(non_empty_paths) == 0:
     exit(0)
 
 # Determine columns
-cell_data_cols = pq.read_schema(non_empty_paths[0]).names
+cell_data_cols = common_columns(non_empty_paths)
 use_classifier = snakemake.params.use_classifier
 metadata_cols = load_metadata_cols(snakemake.params.metadata_cols_fp, use_classifier)
 feature_cols = [col for col in cell_data_cols if col not in metadata_cols]

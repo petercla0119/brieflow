@@ -155,13 +155,22 @@ def _float32_schema(schema: pa.Schema) -> pa.Schema:
     )
 
 
+def common_columns(paths: Sequence[Union[str, Path]]) -> list[str]:
+    """Column names present in every file, in the first file order (schema reads only)."""
+    names = pq.read_schema(paths[0]).names
+    keep = set(names)
+    for path in paths[1:]:
+        keep &= set(pq.read_schema(path).names)
+    return [n for n in names if n in keep]
+
+
 def columns_without_nulls(paths: Sequence[Union[str, Path]]) -> list[str]:
     """Columns with zero nulls across all files, from parquet statistics only (no data read).
 
     Equivalent to ``pd.concat(frames).dropna(axis=1).columns`` for files whose writer
-    recorded null counts; a column with missing statistics is kept.
+    recorded null counts; a column with missing statistics is kept. Per-well NaN drops can leave
+    files with different columns, so only the shared columns are considered.
     """
-    schema = pq.read_schema(paths[0])
     has_null = set()
     for path in paths:
         md = pq.read_metadata(path)
@@ -171,7 +180,7 @@ def columns_without_nulls(paths: Sequence[Union[str, Path]]) -> list[str]:
                 stats = col.statistics
                 if stats is not None and stats.null_count:
                     has_null.add(col.path_in_schema)
-    return [name for name in schema.names if name not in has_null]
+    return [name for name in common_columns(paths) if name not in has_null]
 
 
 def read_parquet_frames(
