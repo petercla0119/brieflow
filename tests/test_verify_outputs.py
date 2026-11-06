@@ -28,6 +28,7 @@ FLAT_OUTPUTS = [
     "sbs/parquets/P-1_W-A1__processed_reads.parquet",
     "phenotype/parquets/P-1_W-A1__phenotype_info.parquet",
     "phenotype/parquets/P-1_W-A1__phenotype_cp_min.parquet",
+    "merge/parquets/P-1_W-A1__merge_formatted.parquet",
     "merge/parquets/P-1_W-A1__merge_final.parquet",
 ]
 
@@ -55,9 +56,14 @@ PER_TILE_NOISE = {
 NESTED_OUTPUTS = [p.replace("P-1_W-A1__", "1/A/1/") for p in FLAT_OUTPUTS]
 
 
-def write_parquet(path, rows=1):
+COORD_COLS = vo.REQUIRED_COLUMNS["merge/parquets/**/*merge_formatted.parquet"]
+
+
+def write_parquet(path, rows=1, columns=None):
+    """A real parquet with `rows` rows; carries the 12 coordinate columns unless told otherwise."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"label": list(range(rows))}).to_parquet(path)
+    cols = ["label"] + COORD_COLS if columns is None else columns
+    pd.DataFrame({c: list(range(rows)) for c in cols}).to_parquet(path)
 
 
 def write_tiff(root):
@@ -122,6 +128,19 @@ def test_zero_row_parquet_fails(tmp_path):
     failures = vo.check(root, vo.COMMON + vo.LEGS["tiff"][1])
     assert len(failures) == 1
     assert "0 rows" in failures[0]
+
+
+def test_merge_formatted_without_coordinates_fails(tmp_path):
+    # format_merge once wrote 36-column tables when preprocess metadata was empty
+    # (TDP-GWS recomb rerun, 2026-10-08). A merge_formatted without the 12
+    # stage-coordinate columns is not a complete output.
+    root = build_tiff_root(tmp_path)
+    write_parquet(
+        root / "merge/parquets/P-1_W-A1__merge_formatted.parquet", columns=["label"]
+    )
+    failures = vo.check(root, vo.COMMON + vo.LEGS["tiff"][1])
+    assert len(failures) == 1
+    assert "missing columns" in failures[0] and "global_i_0" in failures[0]
 
 
 def test_empty_fov_per_tile_parquets_are_not_flagged(tmp_path):

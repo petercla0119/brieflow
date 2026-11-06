@@ -20,8 +20,21 @@ These functions support the formatting of data for subsequent deduplication
 and analysis in the merging pipeline.
 """
 
+import warnings
+
 import pandas as pd
 import numpy as np
+
+# Columns attach_global_pixel_coords needs from preprocess combined_metadata.
+METADATA_COORD_COLS = [
+    "plate",
+    "well",
+    "tile",
+    "x_pos",
+    "y_pos",
+    "pixel_size_x",
+    "pixel_size_y",
+]
 
 
 def fov_distance(
@@ -135,15 +148,27 @@ def attach_global_pixel_coords(
     Returns:
         DataFrame with global_i_{suffix}, global_j_{suffix} columns added,
         anchored at the per-(plate, well) min tile-corner.
+
+    Raises:
+        ValueError: if metadata is None, has no rows, or lacks a required
+            column. An empty frame used to return `merged` untouched, which
+            silently produced merge tables without the 12 coordinate columns
+            (TDP-GWS recomb rerun, 2026-10-08) -- so it is an error now.
     """
+    modality = "phenotype" if suffix == "0" else "sbs"
     if metadata is None or len(metadata) == 0:
-        return merged
+        raise ValueError(
+            f"{modality} metadata is empty; cannot attach x_pos/y_pos/pixel_size/"
+            f"global_i/global_j_{suffix}. Check preprocess/metadata/{modality}/"
+            "combined_metadata.parquet for this well."
+        )
+    missing = [c for c in METADATA_COORD_COLS if c not in metadata.columns]
+    if missing:
+        raise ValueError(f"{modality} metadata is missing columns {missing}")
 
     tile_col_in_merged = "tile" if suffix == "0" else "site"
     meta = (
-        metadata[
-            ["plate", "well", "tile", "x_pos", "y_pos", "pixel_size_x", "pixel_size_y"]
-        ]
+        metadata[METADATA_COORD_COLS]
         .drop_duplicates(subset=["plate", "well", "tile"])
         .rename(
             columns={
@@ -157,6 +182,13 @@ def attach_global_pixel_coords(
     )
 
     merged = merged.merge(meta, how="left", on=["plate", "well", tile_col_in_merged])
+    unmatched = int(merged[f"x_pos_{suffix}"].isna().sum())
+    if unmatched:
+        warnings.warn(
+            f"{unmatched} of {len(merged)} merged cells have no {modality} metadata "
+            f"row for their {tile_col_in_merged}; global_i/j_{suffix} left null",
+            stacklevel=2,
+        )
 
     tile_h, tile_w = tile_dimensions
     corner_x_um = (
