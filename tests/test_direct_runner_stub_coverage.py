@@ -27,7 +27,7 @@ if str(_REPO_ROOT / "workflow") not in sys.path:
 
 MODULE = "lib.shared.resource_monitor"
 RUNNERS = sorted((_REPO_ROOT / "scripts" / "direct").glob("run_*_direct.py"))
-DIRECT_TESTS = sorted((_REPO_ROOT / "tests" / "direct").glob("*.py"))
+DIRECT_TESTS = sorted((_REPO_ROOT / "tests" / "direct").glob("test_*.py"))
 
 
 def _imported_names(source, module):
