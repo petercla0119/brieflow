@@ -294,8 +294,10 @@ def get_montage_inputs(
             # Append the output file path to the list
             output_files.append(output_file)
 
-    # Add the overlay file path (TIFF mode only)
-    if montage_overlay_template is not None:
+    # Add the overlay file path (TIFF mode only). Guarded: with no montage data files the
+    # loop above never bound gene/sgrna, and the input function must return [] rather than
+    # raise UnboundLocalError while the DAG is being built.
+    if montage_overlay_template is not None and montage_data_files:
         overlay_file = str(montage_overlay_template).format(
             gene=gene, sgrna=sgrna, cell_class=cell_class
         )
