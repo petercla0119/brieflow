@@ -1,8 +1,9 @@
 """Bootstrap statistical testing for perturbation effects.
 
 Construct nulls come from the beta-quantile shortcut (no resampling, nothing persisted);
-the gene null is the elementwise median across the gene's construct nulls. P-values are
-two-tailed empirical; FDR correction is applied over all features at once.
+the gene null is the elementwise median across the gene's construct nulls, each construct
+drawn and permuted independently so no draw pairs the same control pool across sgRNAs.
+P-values are two-tailed empirical; Benjamini-Hochberg runs within each feature.
 """
 
 import numpy as np
@@ -227,178 +228,87 @@ def bootstrap_gene(
         nulls.append(null)
     if not nulls:
         return rows, None, 0
-    # Gene null = median of the construct nulls draw by draw: a sampled median of medians.
-    gene_p = calculate_pvals(np.median(np.stack(nulls), axis=0), gene_observed)
+    gene_p = calculate_pvals(gene_null(nulls, rng), gene_observed)
     return rows, gene_p, len(nulls)
+
+
+def gene_null(nulls: List[np.ndarray], rng: np.random.Generator) -> np.ndarray:
+    """Gene-level null: the elementwise median across independently ordered construct nulls.
+
+    Each construct's draws are permuted before the median, so draw ``i`` of one construct
+    never pairs with draw ``i`` of another. Taking the median over aligned draws re-uses the
+    same control pool (and the same Beta quantile) across the gene's sgRNAs and inflates the
+    variance of the gene null, which lowers every gene p-value.
+
+    Args:
+        nulls (List[np.ndarray]): (num_sims, n_features) null medians per construct.
+        rng (np.random.Generator): Random generator.
+
+    Returns:
+        np.ndarray: (num_sims, n_features) gene null medians.
+    """
+    num_sims = nulls[0].shape[0]
+    return np.median(np.stack([n[rng.permutation(num_sims)] for n in nulls]), axis=0)
 
 
 def apply_multiple_hypothesis_correction(
     df: pd.DataFrame, feature_cols: List[str], min_p_value: Optional[float] = None
 ) -> pd.DataFrame:
-    """Apply multiple hypothesis testing correction to p-values.
+    """Benjamini-Hochberg within each feature, plus -log10 columns.
+
+    One family per feature column: the p-values of one feature across all rows (genes or
+    constructs) are corrected together, and features do not compete with each other. A
+    single pass over every gene x feature test does not work at genome scale: on one
+    TDP-GWS plate (19,714 genes x 291 features, 100k sims) 484 tests sat at the 1/num_sims
+    floor and the smallest adjusted p anywhere was 0.1185, so nothing passed.
 
     Args:
         df (pd.DataFrame): DataFrame containing p-values to be corrected.
         feature_cols (List[str]): List of column names containing p-values to correct.
-        min_p_value (Optional[float], optional): Minimum detectable p-value for FDR
-            correction. If None, will be auto-detected from 'num_sims' column or
-            default to 1e-5. Defaults to None.
+        min_p_value (Optional[float], optional): Value used in place of p = 0 for the
+            correction (the resolution floor). If None, 1 / max(num_sims) when a
+            'num_sims' column exists, else 1e-5. Original p-values are kept as written.
 
     Returns:
-        pd.DataFrame: DataFrame with additional columns for each feature:
+        pd.DataFrame: DataFrame with, per feature:
             - {feature}_pval: Original p-values (including 0s)
             - {feature}_neg_log10_pval: -log10(p-values), with ceiling for p=0 cases
             - {feature}_fdr: FDR-corrected p-values using Benjamini-Hochberg method
             - {feature}_neg_log10_fdr: -log10(FDR-corrected p-values)
     """
-    print("Applying multiple hypothesis testing correction...")
-
-    # Auto-detect minimum p-value for FDR correction (but keep original p=0 values)
     if min_p_value is None:
-        # Look for num_sims column to determine minimum detectable p-value
         if "num_sims" in df.columns:
             min_p_value = 1.0 / df["num_sims"].max()
-            max_log10 = np.log10(df["num_sims"].max())
-            print(
-                f"For FDR correction, treating p=0 as {min_p_value} (-log10 = {max_log10})"
-            )
         else:
-            min_p_value = 1e-5  # Conservative default (corresponds to -log10 = 5)
-            max_log10 = 5.0
-            print(
-                f"Using default: treating p=0 as {min_p_value} for FDR, -log10 = {max_log10}"
+            min_p_value = 1e-5
+    max_log10 = -np.log10(min_p_value)
+    print(
+        f"BH per feature over {len(feature_cols)} features; p = 0 enters as {min_p_value}"
+    )
+
+    out = {c: df[c] for c in df.columns if c not in feature_cols}
+    n_sig = 0
+    for feature in feature_cols:
+        pvals = pd.to_numeric(df[feature], errors="coerce").to_numpy(dtype=float)
+        valid = np.isfinite(pvals) & (pvals >= 0) & (pvals <= 1)
+        fdr = np.full(len(pvals), np.nan)
+        if valid.sum() > 1:
+            fdr[valid] = false_discovery_control(
+                np.maximum(pvals[valid], min_p_value), method="bh"
             )
-
-    df_corrected = df.copy()
-
-    # First pass: collect all valid p-values for global FDR correction
-    all_pvals = []
-    pval_positions = []  # Track which feature and row each p-value came from
-
-    for feature in feature_cols:
-        pvals = df[feature].values
-        valid_mask = pd.notna(pvals) & (pvals >= 0) & (pvals <= 1)
-
-        for i, (pval, valid) in enumerate(zip(pvals, valid_mask)):
-            if valid:
-                # Handle p-values of exactly 0 (perfect separation in bootstrap)
-                adjusted_pval = max(pval, min_p_value) if pval == 0 else pval
-                all_pvals.append(adjusted_pval)
-                pval_positions.append((feature, i))
-
-    print(f"Found {len(all_pvals)} valid p-values across all features")
-
-    # Apply global FDR correction to all p-values
-    if len(all_pvals) > 1:
-        try:
-            fdr_corrected_all = false_discovery_control(all_pvals, method="bh")
-            print(
-                f"Global FDR correction applied. Significant at 0.05: {(fdr_corrected_all < 0.05).sum()}"
+        elif valid.sum() == 1:
+            fdr[valid] = max(pvals[valid][0], min_p_value)
+        with np.errstate(divide="ignore"):
+            neg_log10_p = np.where(
+                valid, -np.log10(np.maximum(pvals, min_p_value)), np.nan
             )
-        except Exception as e:
-            print(f"Global FDR correction failed: {e}")
-            fdr_corrected_all = all_pvals  # Fallback to uncorrected
-    else:
-        print("Insufficient p-values for FDR correction")
-        fdr_corrected_all = all_pvals
-
-    # Initialize output columns
-    for feature in feature_cols:
-        df_corrected[f"{feature}_neg_log10_pval"] = np.nan
-        df_corrected[f"{feature}_fdr"] = np.nan
-        df_corrected[f"{feature}_neg_log10_fdr"] = np.nan
-
-    # Second pass: populate corrected values
-    fdr_idx = 0
-    for feature in feature_cols:
-        print(f"Processing feature: {feature}")
-        pvals = df[feature].values
-        valid_mask = pd.notna(pvals) & (pvals >= 0) & (pvals <= 1)
-
-        if valid_mask.sum() == 0:
-            print(f"  No valid p-values found for {feature}")
-            continue
-
-        print(f"  Found {valid_mask.sum()} valid p-values")
-
-        # Process each p-value
-        neg_log10_pvals = np.full(len(pvals), np.nan)
-        fdr_pvals = np.full(len(pvals), np.nan)
-
-        for i, (pval, valid) in enumerate(zip(pvals, valid_mask)):
-            if valid:
-                # Calculate -log10(p): use ceiling for p=0, otherwise normal calculation
-                if pval == 0:
-                    if "num_sims" in df.columns:
-                        neg_log10_pvals[i] = np.log10(df.iloc[i]["num_sims"])
-                    else:
-                        neg_log10_pvals[i] = 5.0
-                else:
-                    neg_log10_pvals[i] = -np.log10(pval)
-
-                # Get corresponding FDR-corrected p-value
-                fdr_pvals[i] = fdr_corrected_all[fdr_idx]
-                fdr_idx += 1
-
-        # Compute -log10(FDR)
-        neg_log10_fdr = np.full(len(fdr_pvals), np.nan)
-        for i, fdr_val in enumerate(fdr_pvals):
-            if not np.isnan(fdr_val) and fdr_val > 0:
-                neg_log10_fdr[i] = -np.log10(fdr_val)
-            elif not np.isnan(fdr_val) and fdr_val == 0:
-                neg_log10_fdr[i] = max_log10
-
-        # Store results (keep original p-values unchanged)
-        df_corrected[f"{feature}_neg_log10_pval"] = neg_log10_pvals
-        df_corrected[f"{feature}_fdr"] = fdr_pvals
-        df_corrected[f"{feature}_neg_log10_fdr"] = neg_log10_fdr
-
-        # Report zeros found
-        zero_count = (df[feature].values == 0).sum()
-        if zero_count > 0:
-            if "num_sims" in df.columns:
-                max_log10 = np.log10(df["num_sims"].max())
-                print(
-                    f"  Found {zero_count} p-values of exactly 0 (kept as 0, -log10 = {max_log10:.1f})"
-                )
-            else:
-                print(
-                    f"  Found {zero_count} p-values of exactly 0 (kept as 0, -log10 = 5.0)"
-                )
-
-    # Reorder columns: metadata + feature groups
-    print("Reordering columns by feature...")
-
-    # Identify metadata columns
-    all_cols = df_corrected.columns.tolist()
-    derived_cols = []
-    for feature in feature_cols:
-        derived_cols.extend(
-            [
-                f"{feature}_neg_log10_pval",
-                f"{feature}_fdr",
-                f"{feature}_neg_log10_fdr",
-            ]
-        )
-
-    metadata_cols = [
-        col for col in all_cols if col not in feature_cols and col not in derived_cols
-    ]
-
-    # Rename original columns to _pval
-    rename_dict = {feature: f"{feature}_pval" for feature in feature_cols}
-    df_corrected = df_corrected.rename(columns=rename_dict)
-
-    # Build ordered column list
-    ordered_cols = metadata_cols.copy()
-    for feature in feature_cols:
-        ordered_cols.extend(
-            [
-                f"{feature}_pval",
-                f"{feature}_neg_log10_pval",
-                f"{feature}_fdr",
-                f"{feature}_neg_log10_fdr",
-            ]
-        )
-
-    return df_corrected[ordered_cols]
+            neg_log10_fdr = np.where(
+                np.isfinite(fdr), -np.log10(np.maximum(fdr, 10.0**-max_log10)), np.nan
+            )
+        n_sig += int(np.nansum(fdr < 0.05))
+        out[f"{feature}_pval"] = pvals
+        out[f"{feature}_neg_log10_pval"] = neg_log10_p
+        out[f"{feature}_fdr"] = fdr
+        out[f"{feature}_neg_log10_fdr"] = neg_log10_fdr
+    print(f"Significant at FDR 0.05 across features: {n_sig}")
+    return pd.DataFrame(out, index=df.index)
