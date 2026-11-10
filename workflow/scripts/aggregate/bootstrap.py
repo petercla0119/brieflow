@@ -85,6 +85,9 @@ for gene, rows in construct_table.groupby(pert_col, sort=False):
     ]
     tasks.append((len(tasks), gene, constructs, gene_observed.loc[gene].to_numpy()))
 print(f"{len(tasks)} genes, {len(construct_table)} constructs, {num_sims} sims")
+# The tasks hold only the per-construct feature vectors; drop the wide tables before the
+# fork so the workers do not inherit ~2 GB of DataFrames they never read.
+del construct_table, gene_table, gene_observed
 
 
 def _work(task):

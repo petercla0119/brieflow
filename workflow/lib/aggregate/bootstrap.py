@@ -191,6 +191,19 @@ def calculate_pvals(
 # observed median is itself noise. Nontargeting pools are unaffected (they are the null).
 MIN_CELLS = 30
 
+# Features are processed in chunks so a gene's live null arrays stay within a memory
+# budget instead of num_sims x all features per construct (233 MB at 100k sims x 291
+# features; a 658-construct pseudo-gene then needs 150 GB and took a 64 GB box down).
+# Chunk width = budget / (2 arrays x num_sims x constructs x 8 B), capped at FEATURE_CHUNK.
+FEATURE_CHUNK = 16
+NULL_BUDGET_BYTES = 1 << 30
+
+
+def _chunk_width(num_sims: int, n_constructs: int) -> int:
+    """Features per chunk so the construct nulls plus their stack fit NULL_BUDGET_BYTES."""
+    per_feature = 2 * num_sims * n_constructs * 8
+    return max(1, min(FEATURE_CHUNK, NULL_BUDGET_BYTES // per_feature))
+
 
 def bootstrap_gene(
     pools: List[np.ndarray],
@@ -218,18 +231,27 @@ def bootstrap_gene(
         Tuple: per-construct (id, cell count, p-values or None), gene p-values or None
             (no construct passed min_cells), number of constructs in the gene null.
     """
-    rows, nulls = [], []
-    for construct_id, sample_size, observed in constructs:
-        if sample_size < min_cells:
-            rows.append((construct_id, sample_size, None))
-            continue
-        null = beta_quantile_null(pools, sizes, sample_size, num_sims, rng)
-        rows.append((construct_id, sample_size, calculate_pvals(null, observed)))
-        nulls.append(null)
-    if not nulls:
-        return rows, None, 0
-    gene_p = calculate_pvals(gene_null(nulls, rng), gene_observed)
-    return rows, gene_p, len(nulls)
+    tested = [(cid, n, obs) for cid, n, obs in constructs if n >= min_cells]
+    skipped = [(cid, n, None) for cid, n, obs in constructs if n < min_cells]
+    if not tested:
+        return skipped, None, 0
+    n_features = pools[0].shape[1]
+    construct_p = np.empty((len(tested), n_features))
+    gene_p = np.empty(n_features)
+    width = _chunk_width(num_sims, len(tested))
+    for start in range(0, n_features, width):
+        sl = slice(start, min(start + width, n_features))
+        chunk_pools = [pool[:, sl] for pool in pools]
+        nulls = []
+        for i, (_, sample_size, observed) in enumerate(tested):
+            null = beta_quantile_null(chunk_pools, sizes, sample_size, num_sims, rng)
+            construct_p[i, sl] = calculate_pvals(null, observed[sl])
+            nulls.append(null)
+        gene_p[sl] = calculate_pvals(gene_null(nulls, rng), gene_observed[sl])
+    rows = [(cid, n, construct_p[i]) for i, (cid, n, _) in enumerate(tested)] + skipped
+    order = {cid: k for k, (cid, _, _) in enumerate(constructs)}
+    rows.sort(key=lambda r: order[r[0]])
+    return rows, gene_p, len(tested)
 
 
 def gene_null(nulls: List[np.ndarray], rng: np.random.Generator) -> np.ndarray:
