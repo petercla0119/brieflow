@@ -1,89 +1,75 @@
 """Bootstrap statistical testing for perturbation effects.
 
-This module provides functionality for performing bootstrap statistical tests
-to validate perturbation effects detected in the aggregate pipeline. It includes
-functions for data preparation, feature selection, bootstrap simulation, and
-p-value calculation at both construct and gene levels.
+Construct nulls come from the beta-quantile shortcut (no resampling, nothing persisted);
+the gene null is the elementwise median across the gene's construct nulls, each construct
+drawn and permuted independently so no draw pairs the same control pool across sgRNAs.
+P-values are two-tailed empirical; Benjamini-Hochberg runs within each feature.
 """
 
 import numpy as np
 import pandas as pd
 import random
-import numba
-from pathlib import Path
 from typing import Tuple, List, Dict, Any, Optional, Union
 from scipy.stats import false_discovery_control
 
 
-@numba.njit(cache=True)
-def _bootstrap_inner_numba(
-    controls_features: np.ndarray,
-    pool_lookup: np.ndarray,
-    pool_starts: np.ndarray,
-    pool_ends: np.ndarray,
+def prepare_control_pools(
+    controls_arr: np.ndarray,
+) -> Tuple[List[np.ndarray], np.ndarray]:
+    """Split controls into per-control-id pools, each sorted per feature.
+
+    Args:
+        controls_arr (np.ndarray): (n_rows, 1 + n_features); column 0 is the control id.
+
+    Returns:
+        Tuple[List[np.ndarray], np.ndarray]: per-pool (n_pool, n_features) arrays sorted
+            along axis 0, and the pool sizes (sampling weights).
+    """
+    control_ids = controls_arr[:, 0]
+    features = controls_arr[:, 1:].astype(np.float64)
+    pools = [
+        np.sort(features[control_ids == cid], axis=0) for cid in np.unique(control_ids)
+    ]
+    sizes = np.array([len(pool) for pool in pools], dtype=np.int64)
+    return pools, sizes
+
+
+def beta_quantile_null(
+    pools: List[np.ndarray],
+    sizes: np.ndarray,
     sample_size: int,
     num_sims: int,
+    rng: np.random.Generator,
 ) -> np.ndarray:
-    """Inner JIT loop for run_construct_bootstrap.
+    """Null medians without resampling, via the order-statistic identity.
 
-    Pre-Python equivalent: pick a random row from `controls_features` to seed
-    the pool, then sample `sample_size` rows with replacement from that pool,
-    and take the median per feature. Repeat `num_sims` times.
-
-    Pulled out of `run_construct_bootstrap` so the inner loop can be Numba-
-    compiled — measured ~50× speedup over the pure-Python equivalent on
-    baker-scale construct/control sizes.
+    The median of ``sample_size`` i.i.d. draws from a pool's empirical distribution F is
+    F^-1(U) with U ~ Beta((n+1)/2, (n+1)/2) (exact for odd n). One Beta draw plus one
+    indexed lookup into the pre-sorted pool replaces an n-cell resample and a median.
+    Pools are chosen with probability proportional to size, matching the resampler's
+    "pick a random control row, use its pool" semantics.
 
     Args:
-        controls_features (np.ndarray): (n_rows, n_features) controls features,
-            sorted by control_id so each pool occupies a contiguous slice.
-        pool_lookup (np.ndarray): (n_rows,) maps each row to its pool index.
-        pool_starts (np.ndarray): Start row index of each pool.
-        pool_ends (np.ndarray): End row index (exclusive) of each pool.
-        sample_size (int): Number of rows sampled per simulation.
-        num_sims (int): Number of bootstrap simulations.
+        pools (List[np.ndarray]): Per-pool features sorted along axis 0 (prepare_control_pools).
+        sizes (np.ndarray): Pool sizes.
+        sample_size (int): Cells per simulated construct.
+        num_sims (int): Number of simulated medians.
+        rng (np.random.Generator): Random generator.
 
     Returns:
-        np.ndarray: (num_sims, n_features) median values per simulation.
+        np.ndarray: (num_sims, n_features) null medians.
     """
-    n_rows, n_features = controls_features.shape
+    n_features = pools[0].shape[1]
+    pool_idx = rng.choice(len(pools), size=num_sims, p=sizes / sizes.sum())
+    a = (sample_size + 1) / 2
+    u = rng.beta(a, a, size=(num_sims, n_features))
     null_medians = np.empty((num_sims, n_features), dtype=np.float64)
-    for i in range(num_sims):
-        seed_row = np.random.randint(0, n_rows)
-        pool_idx = pool_lookup[seed_row]
-        start = pool_starts[pool_idx]
-        end = pool_ends[pool_idx]
-        pool_size = end - start
-        sample = np.empty((sample_size, n_features), dtype=np.float64)
-        for k in range(sample_size):
-            row_idx = start + np.random.randint(0, pool_size)
-            for j in range(n_features):
-                sample[k, j] = controls_features[row_idx, j]
-        for j in range(n_features):
-            null_medians[i, j] = np.median(sample[:, j])
+    for p_i in np.unique(pool_idx):
+        rows = np.flatnonzero(pool_idx == p_i)
+        pool = pools[p_i]
+        k = np.minimum((u[rows] * len(pool)).astype(np.int64), len(pool) - 1)
+        null_medians[rows] = np.take_along_axis(pool, k, axis=0)
     return null_medians
-
-
-def get_construct_features(
-    construct_id: str, construct_features_arr: np.ndarray
-) -> np.ndarray:
-    """Extract feature array for a specific construct.
-
-    Args:
-        construct_id (str): Identifier for the construct.
-        construct_features_arr (np.ndarray): Array containing all construct features.
-
-    Returns:
-        np.ndarray: Feature array for the specified construct (excluding ID column).
-
-    Raises:
-        ValueError: If the construct is not found in the features array.
-    """
-    indices = np.where(construct_features_arr[:, 0] == construct_id)[0]
-    if len(indices) == 0:
-        raise ValueError(f"Construct {construct_id} not found in features array")
-    construct_arr = construct_features_arr[indices][0][1:].astype(float)
-    return construct_arr
 
 
 def create_pseudogene_groups(
@@ -177,72 +163,6 @@ def create_pseudogene_groups(
     return pseudogene_groups, remaining_constructs
 
 
-def write_construct_data(
-    construct_id: str,
-    construct_features_df: pd.DataFrame,
-    perturbation_col: str,
-    perturbation_id_col: str,
-    output_dir: Path,
-) -> None:
-    """Write construct data file for a single construct.
-
-    Args:
-        construct_id (str): Identifier for the construct.
-        construct_features_df (pd.DataFrame): DataFrame containing construct features.
-        perturbation_col (str): Name of the column containing perturbation/gene names.
-        perturbation_id_col (str): Name of the column containing perturbation IDs.
-        output_dir (Path): Directory where the construct data file will be saved.
-    """
-    # Get the gene for this construct
-    construct_row = construct_features_df[
-        construct_features_df[perturbation_id_col] == construct_id
-    ]
-    if len(construct_row) > 0:
-        gene = construct_row[perturbation_col].iloc[0]
-    else:
-        gene = "unknown"
-
-    # Create gene__construct combined ID
-    combined_id = f"{gene}__{construct_id}"
-
-    # Create metadata file for the construct
-    construct_data = pd.DataFrame(
-        {"construct_id": [construct_id], "gene": [gene], "combined_id": [combined_id]}
-    )
-
-    # Save using combined_id for filename
-    output_file = output_dir / f"{combined_id}__construct_data.tsv"
-    construct_data.to_csv(output_file, sep="\t", index=False)
-
-
-def run_single_bootstrap_simulation(
-    controls_arr: np.ndarray, sample_size: int
-) -> np.ndarray:
-    """Run a single bootstrap simulation.
-
-    Args:
-        controls_arr (np.ndarray): Array of control data where first column contains
-            identifiers and remaining columns contain features.
-        sample_size (int): Size of sample to draw for the simulation.
-
-    Returns:
-        np.ndarray: Median values from the simulation across all features.
-    """
-    random_cell_idx = np.random.choice(controls_arr.shape[0], 1, replace=False)[0]
-    control_id = controls_arr[random_cell_idx, 0]
-
-    indices = np.where(controls_arr[:, 0] == control_id)[0]
-    control_construct_arr = controls_arr[indices]
-
-    # Sample cells with replacement from this construct only
-    sample_arr = control_construct_arr[
-        np.random.choice(control_construct_arr.shape[0], sample_size, replace=True)
-    ]
-
-    # Return median (excluding ID column)
-    return np.median(sample_arr[:, 1:].astype(float), axis=0)
-
-
 def calculate_pvals(
     null_medians_arr: np.ndarray, observed_medians: np.ndarray
 ) -> np.ndarray:
@@ -267,260 +187,153 @@ def calculate_pvals(
     return pvals_two_tail
 
 
-def run_construct_bootstrap(
-    construct_id: str,
-    construct_features_arr: np.ndarray,
-    controls_arr: np.ndarray,
-    sample_size: int,
+# Constructs with fewer cells get no p-value and stay out of the gene null. The null is
+# valid at any n (the Beta identity is exact for odd n), so this is a coverage choice, not
+# a correctness one: at 30 a TDP-GWS plate lost 35 % of its sgRNAs and 13 % of its genes;
+# at 10 it loses 4 % of sgRNAs (decision 2026-11-10). Controls are unaffected (they are
+# the null).
+MIN_CELLS = 10
+
+# Features are processed in chunks so a gene's live null arrays stay within a memory
+# budget instead of num_sims x all features per construct (233 MB at 100k sims x 291
+# features; a 658-construct pseudo-gene then needs 150 GB and took a 64 GB box down).
+# Chunk width = budget / (2 arrays x num_sims x constructs x 8 B), capped at FEATURE_CHUNK.
+FEATURE_CHUNK = 16
+NULL_BUDGET_BYTES = 1 << 30
+
+
+def _chunk_width(num_sims: int, n_constructs: int) -> int:
+    """Features per chunk so the construct nulls plus their stack fit NULL_BUDGET_BYTES."""
+    per_feature = 2 * num_sims * n_constructs * 8
+    return max(1, min(FEATURE_CHUNK, NULL_BUDGET_BYTES // per_feature))
+
+
+def bootstrap_gene(
+    pools: List[np.ndarray],
+    sizes: np.ndarray,
+    constructs: List[Tuple[str, int, np.ndarray]],
+    gene_observed: np.ndarray,
     num_sims: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Run bootstrap analysis for a single construct.
+    rng: np.random.Generator,
+    min_cells: int = MIN_CELLS,
+) -> Tuple[List[Tuple[str, int, Optional[np.ndarray]]], Optional[np.ndarray], int]:
+    """Construct and gene p-values for one gene; nulls live only in memory.
 
     Args:
-        construct_id (str): Identifier for the construct to analyze.
-        construct_features_arr (np.ndarray): Array containing all construct features
-            where first column contains construct IDs and remaining columns contain features.
-        controls_arr (np.ndarray): Array of control data where first column contains
-            control IDs and remaining columns contain features.
-        sample_size (int): Sample size for each bootstrap simulation.
-        num_sims (int): Number of bootstrap simulations to run.
+        pools (List[np.ndarray]): Sorted per-control pools (prepare_control_pools).
+        sizes (np.ndarray): Pool sizes.
+        constructs (List[Tuple[str, int, np.ndarray]]): (id, cell count, observed medians)
+            per construct of the gene.
+        gene_observed (np.ndarray): Observed gene-level medians.
+        num_sims (int): Simulated medians per construct.
+        rng (np.random.Generator): Random generator.
+        min_cells (int): Constructs below this cell count get no p-values and do not
+            enter the gene null.
 
     Returns:
-        Tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - null_medians_arr: Array of null distribution medians from all simulations.
-              Shape: (num_sims, n_features)
-            - p_vals: Array of p-values for each feature. Shape: (n_features,)
-
-    Raises:
-        ValueError: If bootstrap simulation fails due to constant values across simulations.
+        Tuple: per-construct (id, cell count, p-values or None), gene p-values or None
+            (no construct passed min_cells), number of constructs in the gene null.
     """
-    # Get observed medians for this construct
-    observed_medians = get_construct_features(construct_id, construct_features_arr)
-
-    # Build pool ranges from control_ids (sorted to be contiguous), plus a
-    # row→pool lookup so pool selection is weighted by pool size (mirroring
-    # the original "pick a random row, use its control_id" semantics).
-    control_ids = controls_arr[:, 0]
-    controls_features = controls_arr[:, 1:].astype(np.float64)
-    sort_order = np.argsort(control_ids, kind="stable")
-    controls_features_sorted = np.ascontiguousarray(controls_features[sort_order])
-    _, counts = np.unique(control_ids[sort_order], return_counts=True)
-    pool_ends = np.cumsum(counts).astype(np.int64)
-    pool_starts = np.empty_like(pool_ends)
-    pool_starts[0] = 0
-    pool_starts[1:] = pool_ends[:-1]
-    pool_lookup = np.empty(controls_features_sorted.shape[0], dtype=np.int64)
-    for p, (s, e) in enumerate(zip(pool_starts, pool_ends)):
-        pool_lookup[s:e] = p
-
-    null_medians_arr = _bootstrap_inner_numba(
-        controls_features_sorted,
-        pool_lookup,
-        pool_starts,
-        pool_ends,
-        sample_size,
-        num_sims,
-    )
-
-    # Modified verification for single feature case
-    if null_medians_arr.shape[1] == 1:
-        # For single feature, check if all values are identical (which would be weird)
-        all_identical = len(np.unique(null_medians_arr)) == 1
-        if all_identical:
-            raise ValueError("All bootstrap simulations returned identical values")
-    else:
-        # Original verification for multiple features
-        all_same = np.max(null_medians_arr, axis=1) == np.min(null_medians_arr, axis=1)
-        if len(null_medians_arr[all_same]) > 0:
-            raise ValueError(
-                "Bootstrap simulation failed - some simulations returned constant values"
-            )
-
-    # Calculate p-values
-    p_vals = calculate_pvals(null_medians_arr, observed_medians)
-
-    return null_medians_arr, p_vals
+    tested = [(cid, n, obs) for cid, n, obs in constructs if n >= min_cells]
+    skipped = [(cid, n, None) for cid, n, obs in constructs if n < min_cells]
+    if not tested:
+        return skipped, None, 0
+    n_features = pools[0].shape[1]
+    construct_p = np.empty((len(tested), n_features))
+    gene_p = np.empty(n_features)
+    width = _chunk_width(num_sims, len(tested))
+    for start in range(0, n_features, width):
+        sl = slice(start, min(start + width, n_features))
+        chunk_pools = [pool[:, sl] for pool in pools]
+        nulls = []
+        for i, (_, sample_size, observed) in enumerate(tested):
+            null = beta_quantile_null(chunk_pools, sizes, sample_size, num_sims, rng)
+            construct_p[i, sl] = calculate_pvals(null, observed[sl])
+            nulls.append(null)
+        gene_p[sl] = calculate_pvals(gene_null(nulls, rng), gene_observed[sl])
+    rows = [(cid, n, construct_p[i]) for i, (cid, n, _) in enumerate(tested)] + skipped
+    order = {cid: k for k, (cid, _, _) in enumerate(constructs)}
+    rows.sort(key=lambda r: order[r[0]])
+    return rows, gene_p, len(tested)
 
 
-def load_construct_null_arrays(file_paths: List[str]) -> List[np.ndarray]:
-    """Load multiple construct null distribution arrays.
+def gene_null(nulls: List[np.ndarray], rng: np.random.Generator) -> np.ndarray:
+    """Gene-level null: the elementwise median across independently ordered construct nulls.
+
+    Each construct's draws are permuted before the median, so draw ``i`` of one construct
+    never pairs with draw ``i`` of another. Taking the median over aligned draws re-uses the
+    same control pool (and the same Beta quantile) across the gene's sgRNAs and inflates the
+    variance of the gene null, which lowers every gene p-value.
 
     Args:
-        file_paths (List[str]): List of file paths to null distribution numpy arrays.
+        nulls (List[np.ndarray]): (num_sims, n_features) null medians per construct.
+        rng (np.random.Generator): Random generator.
 
     Returns:
-        List[np.ndarray]: List of loaded numpy arrays containing null distributions.
+        np.ndarray: (num_sims, n_features) gene null medians.
     """
-    return [np.load(path, allow_pickle=False) for path in file_paths]
+    num_sims = nulls[0].shape[0]
+    return np.median(np.stack([n[rng.permutation(num_sims)] for n in nulls]), axis=0)
 
 
 def apply_multiple_hypothesis_correction(
     df: pd.DataFrame, feature_cols: List[str], min_p_value: Optional[float] = None
 ) -> pd.DataFrame:
-    """Apply multiple hypothesis testing correction to p-values.
+    """Benjamini-Hochberg within each feature, plus -log10 columns.
+
+    One family per feature column: the p-values of one feature across all rows (genes or
+    constructs) are corrected together, and features do not compete with each other. A
+    single pass over every gene x feature test does not work at genome scale: on one
+    TDP-GWS plate (19,714 genes x 291 features, 100k sims) 484 tests sat at the 1/num_sims
+    floor and the smallest adjusted p anywhere was 0.1185, so nothing passed.
 
     Args:
         df (pd.DataFrame): DataFrame containing p-values to be corrected.
         feature_cols (List[str]): List of column names containing p-values to correct.
-        min_p_value (Optional[float], optional): Minimum detectable p-value for FDR
-            correction. If None, will be auto-detected from 'num_sims' column or
-            default to 1e-5. Defaults to None.
+        min_p_value (Optional[float], optional): Value used in place of p = 0 for the
+            correction (the resolution floor). If None, 1 / max(num_sims) when a
+            'num_sims' column exists, else 1e-5. Original p-values are kept as written.
 
     Returns:
-        pd.DataFrame: DataFrame with additional columns for each feature:
+        pd.DataFrame: DataFrame with, per feature:
             - {feature}_pval: Original p-values (including 0s)
             - {feature}_neg_log10_pval: -log10(p-values), with ceiling for p=0 cases
             - {feature}_fdr: FDR-corrected p-values using Benjamini-Hochberg method
             - {feature}_neg_log10_fdr: -log10(FDR-corrected p-values)
     """
-    print("Applying multiple hypothesis testing correction...")
-
-    # Auto-detect minimum p-value for FDR correction (but keep original p=0 values)
     if min_p_value is None:
-        # Look for num_sims column to determine minimum detectable p-value
         if "num_sims" in df.columns:
             min_p_value = 1.0 / df["num_sims"].max()
-            max_log10 = np.log10(df["num_sims"].max())
-            print(
-                f"For FDR correction, treating p=0 as {min_p_value} (-log10 = {max_log10})"
-            )
         else:
-            min_p_value = 1e-5  # Conservative default (corresponds to -log10 = 5)
-            max_log10 = 5.0
-            print(
-                f"Using default: treating p=0 as {min_p_value} for FDR, -log10 = {max_log10}"
+            min_p_value = 1e-5
+    max_log10 = -np.log10(min_p_value)
+    print(
+        f"BH per feature over {len(feature_cols)} features; p = 0 enters as {min_p_value}"
+    )
+
+    out = {c: df[c] for c in df.columns if c not in feature_cols}
+    n_sig = 0
+    for feature in feature_cols:
+        pvals = pd.to_numeric(df[feature], errors="coerce").to_numpy(dtype=float)
+        valid = np.isfinite(pvals) & (pvals >= 0) & (pvals <= 1)
+        fdr = np.full(len(pvals), np.nan)
+        if valid.sum() > 1:
+            fdr[valid] = false_discovery_control(
+                np.maximum(pvals[valid], min_p_value), method="bh"
             )
-
-    df_corrected = df.copy()
-
-    # First pass: collect all valid p-values for global FDR correction
-    all_pvals = []
-    pval_positions = []  # Track which feature and row each p-value came from
-
-    for feature in feature_cols:
-        pvals = df[feature].values
-        valid_mask = pd.notna(pvals) & (pvals >= 0) & (pvals <= 1)
-
-        for i, (pval, valid) in enumerate(zip(pvals, valid_mask)):
-            if valid:
-                # Handle p-values of exactly 0 (perfect separation in bootstrap)
-                adjusted_pval = max(pval, min_p_value) if pval == 0 else pval
-                all_pvals.append(adjusted_pval)
-                pval_positions.append((feature, i))
-
-    print(f"Found {len(all_pvals)} valid p-values across all features")
-
-    # Apply global FDR correction to all p-values
-    if len(all_pvals) > 1:
-        try:
-            fdr_corrected_all = false_discovery_control(all_pvals, method="bh")
-            print(
-                f"Global FDR correction applied. Significant at 0.05: {(fdr_corrected_all < 0.05).sum()}"
+        elif valid.sum() == 1:
+            fdr[valid] = max(pvals[valid][0], min_p_value)
+        with np.errstate(divide="ignore"):
+            neg_log10_p = np.where(
+                valid, -np.log10(np.maximum(pvals, min_p_value)), np.nan
             )
-        except Exception as e:
-            print(f"Global FDR correction failed: {e}")
-            fdr_corrected_all = all_pvals  # Fallback to uncorrected
-    else:
-        print("Insufficient p-values for FDR correction")
-        fdr_corrected_all = all_pvals
-
-    # Initialize output columns
-    for feature in feature_cols:
-        df_corrected[f"{feature}_neg_log10_pval"] = np.nan
-        df_corrected[f"{feature}_fdr"] = np.nan
-        df_corrected[f"{feature}_neg_log10_fdr"] = np.nan
-
-    # Second pass: populate corrected values
-    fdr_idx = 0
-    for feature in feature_cols:
-        print(f"Processing feature: {feature}")
-        pvals = df[feature].values
-        valid_mask = pd.notna(pvals) & (pvals >= 0) & (pvals <= 1)
-
-        if valid_mask.sum() == 0:
-            print(f"  No valid p-values found for {feature}")
-            continue
-
-        print(f"  Found {valid_mask.sum()} valid p-values")
-
-        # Process each p-value
-        neg_log10_pvals = np.full(len(pvals), np.nan)
-        fdr_pvals = np.full(len(pvals), np.nan)
-
-        for i, (pval, valid) in enumerate(zip(pvals, valid_mask)):
-            if valid:
-                # Calculate -log10(p): use ceiling for p=0, otherwise normal calculation
-                if pval == 0:
-                    if "num_sims" in df.columns:
-                        neg_log10_pvals[i] = np.log10(df.iloc[i]["num_sims"])
-                    else:
-                        neg_log10_pvals[i] = 5.0
-                else:
-                    neg_log10_pvals[i] = -np.log10(pval)
-
-                # Get corresponding FDR-corrected p-value
-                fdr_pvals[i] = fdr_corrected_all[fdr_idx]
-                fdr_idx += 1
-
-        # Compute -log10(FDR)
-        neg_log10_fdr = np.full(len(fdr_pvals), np.nan)
-        for i, fdr_val in enumerate(fdr_pvals):
-            if not np.isnan(fdr_val) and fdr_val > 0:
-                neg_log10_fdr[i] = -np.log10(fdr_val)
-            elif not np.isnan(fdr_val) and fdr_val == 0:
-                neg_log10_fdr[i] = max_log10
-
-        # Store results (keep original p-values unchanged)
-        df_corrected[f"{feature}_neg_log10_pval"] = neg_log10_pvals
-        df_corrected[f"{feature}_fdr"] = fdr_pvals
-        df_corrected[f"{feature}_neg_log10_fdr"] = neg_log10_fdr
-
-        # Report zeros found
-        zero_count = (df[feature].values == 0).sum()
-        if zero_count > 0:
-            if "num_sims" in df.columns:
-                max_log10 = np.log10(df["num_sims"].max())
-                print(
-                    f"  Found {zero_count} p-values of exactly 0 (kept as 0, -log10 = {max_log10:.1f})"
-                )
-            else:
-                print(
-                    f"  Found {zero_count} p-values of exactly 0 (kept as 0, -log10 = 5.0)"
-                )
-
-    # Reorder columns: metadata + feature groups
-    print("Reordering columns by feature...")
-
-    # Identify metadata columns
-    all_cols = df_corrected.columns.tolist()
-    derived_cols = []
-    for feature in feature_cols:
-        derived_cols.extend(
-            [
-                f"{feature}_neg_log10_pval",
-                f"{feature}_fdr",
-                f"{feature}_neg_log10_fdr",
-            ]
-        )
-
-    metadata_cols = [
-        col for col in all_cols if col not in feature_cols and col not in derived_cols
-    ]
-
-    # Rename original columns to _pval
-    rename_dict = {feature: f"{feature}_pval" for feature in feature_cols}
-    df_corrected = df_corrected.rename(columns=rename_dict)
-
-    # Build ordered column list
-    ordered_cols = metadata_cols.copy()
-    for feature in feature_cols:
-        ordered_cols.extend(
-            [
-                f"{feature}_pval",
-                f"{feature}_neg_log10_pval",
-                f"{feature}_fdr",
-                f"{feature}_neg_log10_fdr",
-            ]
-        )
-
-    return df_corrected[ordered_cols]
+            neg_log10_fdr = np.where(
+                np.isfinite(fdr), -np.log10(np.maximum(fdr, 10.0**-max_log10)), np.nan
+            )
+        n_sig += int(np.nansum(fdr < 0.05))
+        out[f"{feature}_pval"] = pvals
+        out[f"{feature}_neg_log10_pval"] = neg_log10_p
+        out[f"{feature}_fdr"] = fdr
+        out[f"{feature}_neg_log10_fdr"] = neg_log10_fdr
+    print(f"Significant at FDR 0.05 across features: {n_sig}")
+    return pd.DataFrame(out, index=df.index)
