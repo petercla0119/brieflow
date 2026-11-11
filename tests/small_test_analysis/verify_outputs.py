@@ -41,6 +41,7 @@ COMMON = [
     # run_phenotype_direct (direct) -- and it is the artifact the known
     # prints-COMPLETE-writes-nothing combine bug produces zero of.
     "phenotype/parquets/**/*phenotype_cp_min.parquet",
+    "merge/parquets/**/*merge_formatted.parquet",
     "merge/parquets/**/*merge_final.parquet",
     # per-plate eval_merge: Snakemake rule on tiff/zarr, run_merge_direct on direct (#92)
     "merge/eval/**/*merge_summary.tsv",
@@ -55,6 +56,31 @@ LEGS = {
 }
 
 ZARR_METADATA_FILES = {"zarr.json", ".zarray", ".zgroup", ".zattrs"}
+
+# Columns a matching parquet must carry. format_merge used to drop the 12 stage
+# coordinates without error when preprocess metadata was empty (TDP-GWS, 2026-10-08).
+REQUIRED_COLUMNS = {
+    "merge/parquets/**/*merge_formatted.parquet": [
+        f"{c}_{s}"
+        for s in ("0", "1")
+        for c in (
+            "x_pos",
+            "y_pos",
+            "pixel_size_x",
+            "pixel_size_y",
+            "global_j",
+            "global_i",
+        )
+    ],
+}
+
+
+def missing_columns(path, required):
+    """Return the required columns absent from a parquet file's schema."""
+    from pyarrow.parquet import read_schema
+
+    names = set(read_schema(path).names)
+    return [c for c in required if c not in names]
 
 
 def empty_reason(path):
@@ -84,6 +110,11 @@ def check(root, patterns):
             failures.append(f"no output matches {root}/{pattern}")
             continue
         reasons = [r for r in (empty_reason(m) for m in matches) if r]
+        if pattern in REQUIRED_COLUMNS and not reasons:
+            for m in matches:
+                missing = missing_columns(m, REQUIRED_COLUMNS[pattern])
+                if missing:
+                    reasons.append(f"{m}: missing columns {missing}")
         failures.extend(reasons)
         if not reasons:
             print(f"ok   {pattern} ({len(matches)} file(s))")
