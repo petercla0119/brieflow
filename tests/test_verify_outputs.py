@@ -30,6 +30,8 @@ FLAT_OUTPUTS = [
     "phenotype/parquets/P-1_W-A1__phenotype_cp_min.parquet",
     "merge/parquets/P-1_W-A1__merge_formatted.parquet",
     "merge/parquets/P-1_W-A1__merge_final.parquet",
+    # per-plate eval_merge (#92): P-{plate}__ flat, {plate}/ nested
+    "merge/eval/P-1__merge_summary.tsv",
 ]
 
 # extract_phenotype writes per-tile phenotype_cp parquets alongside the per-well
@@ -53,7 +55,9 @@ PER_TILE_NOISE = {
 }
 
 # Nested zarr naming: {plate}/{row}/{col}/name.parquet
-NESTED_OUTPUTS = [p.replace("P-1_W-A1__", "1/A/1/") for p in FLAT_OUTPUTS]
+NESTED_OUTPUTS = [
+    p.replace("P-1_W-A1__", "1/A/1/").replace("P-1__", "1/") for p in FLAT_OUTPUTS
+]
 
 
 COORD_COLS = vo.REQUIRED_COLUMNS["merge/parquets/**/*merge_formatted.parquet"]
@@ -63,7 +67,11 @@ def write_parquet(path, rows=1, columns=None):
     """A real parquet with `rows` rows; carries the 12 coordinate columns unless told otherwise."""
     path.parent.mkdir(parents=True, exist_ok=True)
     cols = ["label"] + COORD_COLS if columns is None else columns
-    pd.DataFrame({c: list(range(rows)) for c in cols}).to_parquet(path)
+    df = pd.DataFrame({c: list(range(rows)) for c in cols})
+    if path.suffix == ".tsv":
+        df.to_csv(path, sep="\t", index=False)
+    else:
+        df.to_parquet(path)
 
 
 def write_tiff(root):

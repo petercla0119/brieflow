@@ -867,22 +867,25 @@ def process_sbs(config, args):
         tasks.append((nuclei_p, out, wc))
     errs += run_parallel(tasks, _extract_sbs_info_one, w, "Extract SBS info")
 
-    if not run_combine:
+    # eval (steps 15-16) runs with combine, or alone under --step eval (#92)
+    strict_eval = args.step == "eval"
+    if not (run_combine or strict_eval):
         return errs
 
-    # In combine-only mode, reload ALL tiles (not the SLURM array subset)
-    if args.step == "combine":
+    # In combine-only / eval-only mode, reload ALL tiles (not the SLURM array subset)
+    if args.step in ("combine", "eval"):
         _all = pd.read_csv(pp_cfg["sbs_combo_fp"], sep="\t").astype(str)
         if args.plate_filter:
             _all = _all[_all["plate"] == str(args.plate_filter)]
         tile_combos = _all[["plate", "well", "tile"]].drop_duplicates()
+    combine_tc = tile_combos if run_combine else tile_combos.iloc[0:0]
 
     # --- Steps 12-14: Combine per well ---
     with monitor_step("Combine SBS"):
         print(f"\n  Combine per well...")
         info_types = ["reads", "cells", "sbs_info"]
         for info_type in info_types:
-            for (plate, well), gdf in tile_combos.groupby(["plate", "well"]):
+            for (plate, well), gdf in combine_tc.groupby(["plate", "well"]):
                 out = sbs_well_path(sbs_fp, fmt, plate, well, info_type, "parquet")
                 input_paths = [
                     sbs_data_path(
@@ -938,7 +941,7 @@ def process_sbs(config, args):
                 sbs_well_path(sbs_fp, fmt, plate, well, "processed_reads", "parquet"),
                 cc_params,
             )
-            for (plate, well), _ in tile_combos.groupby(["plate", "well"])
+            for (plate, well), _ in combine_tc.groupby(["plate", "well"])
         ]
         # In-process on purpose: combine already wrote parquet in this process, and forking polars after that deadlocks the children (CI direct leg hung 2026-10-16). Per-well ≈ 20 s, so no pool needed.
         ok = skip = err = 0
@@ -997,37 +1000,40 @@ def process_sbs(config, args):
                         ].iterrows()
                     ]
                     stats_paths = [p for p in stats_paths if Path(p).exists()]
+                    wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                    cells_paths = [
+                        sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet")
+                        for w in wells
+                    ]
+                    cells_paths = [p for p in cells_paths if Path(p).exists()]
+
+                    md_loc = make_loc(fmt, plate)
+                    md_paths = []
+                    for w in wells:
+                        mp = str(
+                            pp_meta_fp
+                            / "metadata"
+                            / "sbs"
+                            / get_data_output_path(
+                                make_loc(fmt, plate, w),
+                                "combined_metadata",
+                                "parquet",
+                                fmt,
+                            )
+                        )
+                        if Path(mp).exists():
+                            md_paths.append(mp)
+                    if strict_eval and not (stats_paths and cells_paths and md_paths):
+                        raise FileNotFoundError(
+                            f"segmentation_stats {len(stats_paths)} tiles, "
+                            f"cells parquets {len(cells_paths)}/{len(wells)}, "
+                            f"combined_metadata {len(md_paths)}/{len(wells)}"
+                        )
 
                     if stats_paths:
                         overview_df = segmentation_overview(stats_paths)
                         Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
                         overview_df.to_csv(overview_out, sep="\t", index=False)
-
-                        wells = tile_combos[tile_combos["plate"] == plate][
-                            "well"
-                        ].unique()
-                        cells_paths = [
-                            sbs_well_path(sbs_fp, fmt, plate, w, "cells", "parquet")
-                            for w in wells
-                        ]
-                        cells_paths = [p for p in cells_paths if Path(p).exists()]
-
-                        md_loc = make_loc(fmt, plate)
-                        md_paths = []
-                        for w in wells:
-                            mp = str(
-                                pp_meta_fp
-                                / "metadata"
-                                / "sbs"
-                                / get_data_output_path(
-                                    make_loc(fmt, plate, w),
-                                    "combined_metadata",
-                                    "parquet",
-                                    fmt,
-                                )
-                            )
-                            if Path(mp).exists():
-                                md_paths.append(mp)
 
                         if cells_paths and md_paths:
                             cells_df = read_parquets(
@@ -1126,6 +1132,12 @@ def process_sbs(config, args):
                             md_paths.append(mp)
 
                     if not (reads_paths and cells_paths and info_paths and md_paths):
+                        if strict_eval:
+                            raise FileNotFoundError(
+                                f"reads {len(reads_paths)}, cells {len(cells_paths)}, "
+                                f"sbs_info {len(info_paths)}, sbs combined_metadata "
+                                f"{len(md_paths)} of {len(wells)} wells"
+                            )
                         print(f"    SKIP eval_mapping P{plate}: missing inputs")
                         continue
 
@@ -1265,9 +1277,9 @@ def main():
     )
     p.add_argument(
         "--step",
-        choices=["tiles", "pre-seg", "segment", "post-seg", "combine", "all"],
+        choices=["tiles", "pre-seg", "segment", "post-seg", "combine", "eval", "all"],
         default="all",
-        help="tiles=per-tile steps 1-11, pre-seg=steps 1-6 (CPU), segment=step 7 (GPU), post-seg=steps 8-11 + combine (CPU; combine skipped for a partial tile selection), combine=merge+eval 12-16, all=everything",
+        help="tiles=per-tile steps 1-11, pre-seg=steps 1-6 (CPU), segment=step 7 (GPU), post-seg=steps 8-11 + combine (CPU; combine skipped for a partial tile selection), combine=merge+eval 12-16, eval=steps 15-16 only from existing outputs (missing inputs are errors; delete stale eval files to regenerate), all=everything",
     )
     p.add_argument(
         "--align-workers",

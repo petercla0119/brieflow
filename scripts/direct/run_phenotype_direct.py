@@ -594,6 +594,11 @@ def process_phenotype(config, args):
     pre_seg_tc = tile_combos if step in ("pre-seg", "all") else tile_combos.iloc[0:0]
     segment_tc = tile_combos if step in ("segment", "all") else tile_combos.iloc[0:0]
     post_seg_tc = tile_combos if step in ("post-seg", "all") else tile_combos.iloc[0:0]
+    # eval (steps 9-10) runs after post-seg, or alone under --step eval (#92)
+    eval_tc = (
+        tile_combos if step in ("post-seg", "eval", "all") else tile_combos.iloc[0:0]
+    )
+    strict_eval = step == "eval"
 
     # --- Step 1+2: Apply IC field + Align (fused, one in-memory pass) ---
     # Fused to skip the throwaway 'illumination_corrected' intermediate (write + re-read,
@@ -793,7 +798,7 @@ def process_phenotype(config, args):
 
     # --- Step 9: Eval segmentation (per plate) ---
     print(f"\n  Eval per plate...")
-    for plate in sorted(post_seg_tc["plate"].unique()):
+    for plate in sorted(eval_tc["plate"].unique()):
         overview_out = phen_plate_path(
             phen_fp, fmt, plate, "segmentation_overview", "tsv", "segmentation"
         )
@@ -824,38 +829,41 @@ def process_phenotype(config, args):
                         ].iterrows()
                     ]
                     stats_paths = [p for p in stats_paths if Path(p).exists()]
+                    wells = tile_combos[tile_combos["plate"] == plate]["well"].unique()
+                    cells_paths = [
+                        phen_well_path(
+                            phen_fp, fmt, plate, w, "phenotype_info", "parquet"
+                        )
+                        for w in wells
+                    ]
+                    cells_paths = [p for p in cells_paths if Path(p).exists()]
+
+                    md_paths = []
+                    for w in wells:
+                        mp = str(
+                            pp_fp
+                            / "metadata"
+                            / "phenotype"
+                            / get_data_output_path(
+                                make_loc(fmt, plate, w),
+                                "combined_metadata",
+                                "parquet",
+                                fmt,
+                            )
+                        )
+                        if Path(mp).exists():
+                            md_paths.append(mp)
+                    if strict_eval and not (stats_paths and cells_paths and md_paths):
+                        raise FileNotFoundError(
+                            f"segmentation_stats {len(stats_paths)} tiles, "
+                            f"phenotype_info parquets {len(cells_paths)}/{len(wells)}, "
+                            f"combined_metadata {len(md_paths)}/{len(wells)}"
+                        )
 
                     if stats_paths:
                         overview_df = segmentation_overview(stats_paths)
                         Path(overview_out).parent.mkdir(parents=True, exist_ok=True)
                         overview_df.to_csv(overview_out, sep="\t", index=False)
-
-                        wells = tile_combos[tile_combos["plate"] == plate][
-                            "well"
-                        ].unique()
-                        cells_paths = [
-                            phen_well_path(
-                                phen_fp, fmt, plate, w, "phenotype_info", "parquet"
-                            )
-                            for w in wells
-                        ]
-                        cells_paths = [p for p in cells_paths if Path(p).exists()]
-
-                        md_paths = []
-                        for w in wells:
-                            mp = str(
-                                pp_fp
-                                / "metadata"
-                                / "phenotype"
-                                / get_data_output_path(
-                                    make_loc(fmt, plate, w),
-                                    "combined_metadata",
-                                    "parquet",
-                                    fmt,
-                                )
-                            )
-                            if Path(mp).exists():
-                                md_paths.append(mp)
 
                         if cells_paths and md_paths:
                             cells_df = read_parquets(cells_paths)
@@ -897,7 +905,7 @@ def process_phenotype(config, args):
                     errs += 1
 
     # --- Step 10: Eval features (per plate) ---
-    for plate in sorted(post_seg_tc["plate"].unique()):
+    for plate in sorted(eval_tc["plate"].unique()):
         eval_features = [f"{prefix}_{ch}_min" for ch in channel_names]
         first_out = (
             phen_plate_path(
@@ -926,6 +934,8 @@ def process_phenotype(config, args):
                 ]
                 min_paths = [p for p in min_paths if Path(p).exists()]
                 if not min_paths:
+                    if strict_eval:
+                        raise FileNotFoundError("no phenotype_cp_min parquets")
                     print(f"    SKIP eval_features P{plate}: no inputs")
                     continue
 
@@ -941,6 +951,10 @@ def process_phenotype(config, args):
                     )
                     if Path(mp).exists():
                         md_paths.append(mp)
+                if strict_eval and len(md_paths) < len(wells):
+                    raise FileNotFoundError(
+                        f"phenotype combined_metadata {len(md_paths)}/{len(wells)} wells"
+                    )
 
                 phenotype_cp_min = read_parquets(min_paths)
                 metadata = pd.concat(
@@ -1026,9 +1040,9 @@ def main():
     )
     p.add_argument(
         "--step",
-        choices=["pre-seg", "segment", "post-seg", "all"],
+        choices=["pre-seg", "segment", "post-seg", "eval", "all"],
         default="all",
-        help="pre-seg=IC+align (CPU), segment=cellpose (GPU), post-seg=extract+combine (CPU), all=everything",
+        help="pre-seg=IC+align (CPU), segment=cellpose (GPU), post-seg=extract+combine+eval (CPU), eval=steps 9-10 only from existing outputs (missing inputs are errors; delete stale eval files to regenerate), all=everything",
     )
     p.add_argument(
         "--save-ic-intermediate",
