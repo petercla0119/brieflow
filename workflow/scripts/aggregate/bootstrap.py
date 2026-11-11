@@ -8,6 +8,7 @@ import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
@@ -49,14 +50,20 @@ else:
 print(f"Using {len(features)} of {len(all_features)} features")
 
 # Control cells only, feature columns only; the pool id is the control's perturbation name.
-controls = (
-    ds.dataset(snakemake.input.features_singlecell)
-    .to_table(
-        columns=[pert_col] + features,
-        filter=pc.match_substring(ds.field(pert_col), control_key),
-    )
-    .to_pandas()
+# One row group at a time, single-threaded, no read-ahead: the threaded to_table() held
+# many row groups of the 259 GB 55-well table in flight and ran a 64 GB box out of memory.
+_scanner = ds.dataset(
+    snakemake.input.features_singlecell,
+    format=ds.ParquetFileFormat(pre_buffer=False),
+).scanner(
+    columns=[pert_col] + features,
+    filter=pc.match_substring(ds.field(pert_col), control_key),
+    use_threads=False,
 )
+controls = pa.Table.from_batches(
+    list(_scanner.to_batches()), schema=_scanner.projected_schema
+).to_pandas()
+del _scanner
 print(f"Control cells: {len(controls)} in {controls[pert_col].nunique()} pools")
 
 if exclusion_string is not None:
