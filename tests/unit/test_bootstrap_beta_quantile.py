@@ -149,7 +149,7 @@ def test_bootstrap_gene_skips_small_constructs_and_is_deterministic():
     constructs = [
         ("sg1", 40, null_like),  # looks like a control
         ("sg2", 60, null_like + 50.0),  # far outside every pool
-        ("sg3", 10, null_like),  # below MIN_CELLS: not tested
+        ("sg3", 5, null_like),  # below MIN_CELLS: not tested
     ]
     out = [
         bootstrap_gene(

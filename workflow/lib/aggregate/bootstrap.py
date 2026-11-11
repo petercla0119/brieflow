@@ -187,9 +187,12 @@ def calculate_pvals(
     return pvals_two_tail
 
 
-# Constructs with fewer cells are not tested: the Beta identity is loose there and the
-# observed median is itself noise. Nontargeting pools are unaffected (they are the null).
-MIN_CELLS = 30
+# Constructs with fewer cells get no p-value and stay out of the gene null. The null is
+# valid at any n (the Beta identity is exact for odd n), so this is a coverage choice, not
+# a correctness one: at 30 a TDP-GWS plate lost 35 % of its sgRNAs and 13 % of its genes;
+# at 10 it loses 4 % of sgRNAs (decision 2026-11-10). Controls are unaffected (they are
+# the null).
+MIN_CELLS = 10
 
 # Features are processed in chunks so a gene's live null arrays stay within a memory
 # budget instead of num_sims x all features per construct (233 MB at 100k sims x 291
