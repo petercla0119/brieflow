@@ -198,14 +198,18 @@ def test_mismatch_low_q_mode_calls_low_q_matches():
 
     # every other read is identical between the two modes
     others = [r for r in default.index if r not in (READ_LOW_Q_RECOMB, LOW_Q_MISMATCH)]
-    assert default.loc[others, "recomb_barcode_matches"].equals(owen.loc[others, "recomb_barcode_matches"])
+    assert default.loc[others, "recomb_barcode_matches"].equals(
+        owen.loc[others, "recomb_barcode_matches"]
+    )
     assert (
         default.loc[others, "no_recomb_reason"] == owen.loc[others, "no_recomb_reason"]
     ).all()
 
     # invariants hold under the new mode
     assert (owen["indeterminant"] == owen["recomb_barcode_matches"].isna()).all()
-    assert ((owen["no_recomb_reason"] == "called") == owen["recomb_barcode_matches"].notna()).all()
+    assert (
+        (owen["no_recomb_reason"] == "called") == owen["recomb_barcode_matches"].notna()
+    ).all()
     assert set(owen["no_recomb_reason"].unique()) <= {
         "called",
         "unmapped",
