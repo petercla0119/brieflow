@@ -182,30 +182,30 @@ def test_mismatch_low_q_mode_calls_low_q_matches():
     ).set_index("read")
 
     # low-Q + match: abstains by default, a True call under Owen's rule
-    assert pd.isna(default.loc[READ_LOW_Q_RECOMB, "no_recomb"])
+    assert pd.isna(default.loc[READ_LOW_Q_RECOMB, "recomb_barcode_matches"])
     assert default.loc[READ_LOW_Q_RECOMB, "no_recomb_reason"] == "low_q_recomb"
-    assert owen.loc[READ_LOW_Q_RECOMB, "no_recomb"] is not pd.NA
-    assert owen.loc[READ_LOW_Q_RECOMB, "no_recomb"]
+    assert owen.loc[READ_LOW_Q_RECOMB, "recomb_barcode_matches"] is not pd.NA
+    assert owen.loc[READ_LOW_Q_RECOMB, "recomb_barcode_matches"]
     assert owen.loc[READ_LOW_Q_RECOMB, "no_recomb_reason"] == "called"
     assert not owen.loc[READ_LOW_Q_RECOMB, "indeterminant"]
 
     # low-Q + mismatch: abstains in both modes, with the mode-specific label
-    assert pd.isna(default.loc[LOW_Q_MISMATCH, "no_recomb"])
-    assert pd.isna(owen.loc[LOW_Q_MISMATCH, "no_recomb"])
+    assert pd.isna(default.loc[LOW_Q_MISMATCH, "recomb_barcode_matches"])
+    assert pd.isna(owen.loc[LOW_Q_MISMATCH, "recomb_barcode_matches"])
     assert default.loc[LOW_Q_MISMATCH, "no_recomb_reason"] == "low_q_recomb"
     assert owen.loc[LOW_Q_MISMATCH, "no_recomb_reason"] == "low_q_mismatch"
     assert owen.loc[LOW_Q_MISMATCH, "indeterminant"]
 
     # every other read is identical between the two modes
     others = [r for r in default.index if r not in (READ_LOW_Q_RECOMB, LOW_Q_MISMATCH)]
-    assert default.loc[others, "no_recomb"].equals(owen.loc[others, "no_recomb"])
+    assert default.loc[others, "recomb_barcode_matches"].equals(owen.loc[others, "recomb_barcode_matches"])
     assert (
         default.loc[others, "no_recomb_reason"] == owen.loc[others, "no_recomb_reason"]
     ).all()
 
     # invariants hold under the new mode
-    assert (owen["indeterminant"] == owen["no_recomb"].isna()).all()
-    assert ((owen["no_recomb_reason"] == "called") == owen["no_recomb"].notna()).all()
+    assert (owen["indeterminant"] == owen["recomb_barcode_matches"].isna()).all()
+    assert ((owen["no_recomb_reason"] == "called") == owen["recomb_barcode_matches"].notna()).all()
     assert set(owen["no_recomb_reason"].unique()) <= {
         "called",
         "unmapped",
