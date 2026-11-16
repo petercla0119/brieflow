@@ -31,6 +31,7 @@ if barcode_type == "multi":
         prefix_recomb=params["prefix_recomb"],
         recomb_filter_col=params["recomb_filter_col"],
         recomb_q_thresh=params["recomb_q_thresh"],
+        recomb_call_mode=params.get("recomb_call_mode", "low_q"),
         error_correct=params["error_correct"],
         sort_calls=params["sort_calls"],
         max_distance=params["max_distance"],
