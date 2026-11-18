@@ -42,7 +42,7 @@ if snakemake.params.perturbation_auc_threshold is not None:
 # cluster aggregated data
 phate_leiden_clustering, potential_df = phate_leiden_pipeline(
     aggregated_data,
-    int(snakemake.params.leiden_resolution),
+    float(snakemake.params.leiden_resolution),
     snakemake.params.phate_distance_metric,
     return_potential=True,
 )

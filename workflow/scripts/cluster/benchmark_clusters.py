@@ -50,7 +50,7 @@ for col in feature_cols:
 
 phate_leiden_clustering_shuffled = phate_leiden_pipeline(
     shuffled_aggregated_data,
-    int(snakemake.params.leiden_resolution),
+    float(snakemake.params.leiden_resolution),
     snakemake.params.phate_distance_metric,
 )
 
