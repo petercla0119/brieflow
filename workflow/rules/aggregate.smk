@@ -103,6 +103,8 @@ rule align:
         control_key=config.get("aggregate", {}).get("control_key"),
         skip_perturbation_score=config.get("aggregate", {}).get("skip_perturbation_score", True),
         control_name_col=config.get("aggregate", {}).get("control_name_col"),
+        align_n_jobs=config.get("aggregate", {}).get("align_n_jobs", 1),
+    threads: int(config.get("aggregate", {}).get("align_n_jobs", 1))
     script:
         "../scripts/aggregate/align.py"
 

@@ -51,6 +51,126 @@ def prepare_alignment_data(
     return metadata, features
 
 
+def embed_file(
+    path,
+    columns,
+    metadata_cols,
+    pca,
+    batch_cols,
+    pert_col,
+    control_key,
+    pert_id_col,
+    skip_perturbation_score=True,
+):
+    """Center-scale one well file by batch and project it with a fitted PCA.
+
+    One file is one well, and ``batch_cols`` always includes the well, so the per-batch
+    center-scale never needs cells from another file; that is what lets files be
+    embedded independently (and in parallel, see :func:`embed_files`).
+
+    Returns:
+        tuple: metadata (pd.DataFrame) and the float32 embedding (np.ndarray).
+    """
+    import gc
+
+    import pyarrow.parquet as pq
+    from pandas.api.types import is_numeric_dtype
+
+    from lib.aggregate.cell_data_utils import split_cell_data
+    from lib.shared.parquet_io import _float32_schema
+
+    table = pq.ParquetFile(path).read(columns=columns)
+    subset_df = table.cast(_float32_schema(table.schema)).to_pandas()
+    del table
+
+    subset_df["perturbation_score"] = np.nan
+    subset_df["perturbation_auc"] = np.nan
+    if not skip_perturbation_score:
+        from lib.aggregate.perturbation_score import perturbation_score
+
+        perturbation_score(subset_df, metadata_cols, pert_col, control_key)
+
+    for col in subset_df.columns:
+        if is_numeric_dtype(subset_df[col]):
+            subset_df[col] = subset_df[col].astype("float32")
+
+    metadata, features = split_cell_data(subset_df, metadata_cols)
+    del subset_df
+    gc.collect()
+
+    metadata, features = prepare_alignment_data(
+        metadata, features, batch_cols, pert_col, control_key, pert_id_col
+    )
+    features = centerscale_by_batch(features, metadata, "batch_values")
+    embedding = pca.transform(features).astype(np.float32)
+    del features
+    gc.collect()
+    return metadata, embedding
+
+
+def embed_files(paths, n_jobs=1, **kwargs):
+    """Embed every well file with :func:`embed_file`, ``n_jobs`` files at a time.
+
+    ``n_jobs > 1`` runs the files in a spawn pool. Each worker holds one well's raw
+    features (tens of GB on a 755k-cell well with 3.6k features), so size ``n_jobs`` to
+    memory, not cores. BLAS threads inside the workers are capped to 2 so the pool does
+    not oversubscribe the node; the parent keeps its own thread count for TVN.
+
+    Returns:
+        tuple: concatenated metadata (pd.DataFrame) and embeddings (np.ndarray), in the
+        order of ``paths`` whatever ``n_jobs`` is.
+    """
+    paths = list(paths)
+    if n_jobs <= 1:
+        results = []
+        for i, path in enumerate(paths):
+            print(f"Processing file {i + 1}/{len(paths)}: {path}")
+            results.append(embed_file(path, **kwargs))
+    else:
+        import multiprocessing as mp
+        import os
+
+        thread_vars = (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "NUMEXPR_MAX_THREADS",
+        )
+        import __main__
+
+        saved = {k: os.environ.get(k) for k in thread_vars}
+        os.environ.update({k: "2" for k in thread_vars})
+        # Snakemake runs scripts as a plain file with top-level code and no module spec;
+        # a spawn worker would re-execute that file as its main module (re-running the
+        # whole align step, then failing on the missing `snakemake` object) and the pool
+        # would respawn workers forever. With no main file to import, the workers only
+        # unpickle `_embed_file_kw` by importing this module.
+        main_file = getattr(__main__, "__file__", None)
+        hide_main = getattr(__main__, "__spec__", None) is None and main_file is not None
+        if hide_main:
+            __main__.__file__ = None
+        try:
+            with mp.get_context("spawn").Pool(n_jobs) as pool:
+                results = pool.starmap(
+                    _embed_file_kw, [(path, kwargs) for path in paths], chunksize=1
+                )
+        finally:
+            if hide_main:
+                __main__.__file__ = main_file
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    metadata = pd.concat([m for m, _ in results], ignore_index=True)
+    embeddings = np.concatenate([e for _, e in results])
+    return metadata, embeddings
+
+
+def _embed_file_kw(path, kwargs):
+    return embed_file(path, **kwargs)
+
+
 def pca_variance_plot(features, variance_threshold=0.95, random_state=42):
     """Perform PCA analysis and create an explained variance plot.
 

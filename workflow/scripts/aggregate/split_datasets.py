@@ -7,6 +7,7 @@ from lib.aggregate.cell_data_utils import (
     load_metadata_cols,
     split_cell_data,
     channel_combo_subset,
+    parse_channel_combo,
 )
 
 
@@ -166,7 +167,7 @@ for cell_class in snakemake.params.cell_classes:
 
     # split features into channel combos
     for channel_combo in snakemake.params.channel_combos:
-        channel_combo_list = channel_combo.split("_")
+        channel_combo_list = parse_channel_combo(channel_combo, all_channels)
         channel_combo_features = channel_combo_subset(
             cell_class_features, channel_combo_list, all_channels
         )

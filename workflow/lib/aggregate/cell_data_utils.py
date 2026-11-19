@@ -95,8 +95,62 @@ def split_cell_data(
     return metadata, features
 
 
+def parse_channel_combo(channel_combo, all_channels):
+    """Split a channel-combo wildcard such as ``"TDP43_STMN2_CE_DAPI"`` into channel names.
+
+    Channel names may themselves contain underscores (``STMN2_CE``, ``DAPI_round2``), so
+    a plain ``split("_")`` is wrong; this matches known channel names greedily, longest
+    first, from the start of the string.
+
+    Args:
+        channel_combo (str): Wildcard value, channel names joined by ``_``, or ``"all"``.
+        all_channels (list): Every channel name of the screen.
+
+    Returns:
+        list: Channel names in the order written; ``["all"]`` for the sentinel.
+
+    Raises:
+        ValueError: If any part of the string is not a known channel name.
+    """
+    if channel_combo == "all":
+        return ["all"]
+    all_sorted = sorted(all_channels, key=len, reverse=True)
+    rest, channels = channel_combo, []
+    while rest:
+        for ch in all_sorted:
+            if rest == ch or rest.startswith(ch + "_"):
+                channels.append(ch)
+                rest = rest[len(ch) + 1 :]
+                break
+        else:
+            raise ValueError(
+                f"channel combo {channel_combo!r} does not split into channels {all_channels}"
+            )
+    return channels
+
+
+def channels_of(col, all_channels):
+    """Every channel a feature name refers to; empty for channel-agnostic features.
+
+    Channel names are matched at token boundaries, longest first, and each match is
+    consumed so ``DAPI`` is not also found inside ``DAPI_round2``.
+    """
+    found, s = set(), f"{col}_"
+    for ch in sorted(all_channels, key=len, reverse=True):
+        token = f"_{ch}_"
+        if token in s:
+            found.add(ch)
+            s = s.replace(token, "_#_")
+    return found
+
+
 def channel_combo_subset(features, channel_combo, all_channels):
-    """Filter features to include only columns from specified channel combination.
+    """Filter features to the columns that belong to a channel combination.
+
+    A column is kept when it is channel-agnostic (shape features such as ``cell_area``)
+    or when every channel it refers to is in the combination. A two-channel feature such
+    as ``nucleus_correlation_DAPI_GFP`` therefore needs both ``DAPI`` and ``GFP``; keeping
+    it under the first matching channel would leak the other channel into the partition.
 
     Args:
         features (pd.DataFrame): DataFrame containing feature data.
@@ -111,20 +165,9 @@ def channel_combo_subset(features, channel_combo, all_channels):
     if channel_combo == "all" or tuple(channel_combo) == ("all",):
         return features
 
-    keep_channels = list(channel_combo)
-    # Longest names first so e.g. "DAPI_round2" matches before "DAPI"
-    all_sorted = sorted(all_channels, key=len, reverse=True)
-
-    def channel_of(col):
-        for ch in all_sorted:
-            if f"_{ch}_" in col or col.endswith(f"_{ch}"):
-                return ch
-        return None  # channel-agnostic features (shape, etc.) — keep always
-
+    keep_channels = set(channel_combo)
     columns_to_keep = [
-        col
-        for col in features.columns
-        if channel_of(col) is None or channel_of(col) in keep_channels
+        col for col in features.columns if channels_of(col, all_channels) <= keep_channels
     ]
 
     return features[columns_to_keep]

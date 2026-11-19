@@ -4,7 +4,6 @@ import warnings
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pandas as pd
-from pandas.api.types import is_numeric_dtype
 from sklearn.decomposition import PCA
 import numpy as np
 
@@ -12,14 +11,10 @@ from lib.aggregate.cell_data_utils import load_metadata_cols, split_cell_data
 from lib.aggregate.align import (
     prepare_alignment_data,
     centerscale_by_batch,
+    embed_files,
     tvn_on_controls,
 )
-from lib.aggregate.perturbation_score import perturbation_score
-from lib.shared.parquet_io import (
-    columns_without_nulls,
-    read_parquet_frames,
-    sample_parquet_rows,
-)
+from lib.shared.parquet_io import columns_without_nulls, sample_parquet_rows
 
 warnings.filterwarnings(
     "ignore", category=UserWarning, module="sklearn.feature_selection"
@@ -80,54 +75,23 @@ gc.collect()
 # different width and rotation.
 
 metadata_cols += ["perturbation_score", "perturbation_auc"]
-metadata_chunks = []
-embedding_chunks = []
-for i, (path, subset_df) in enumerate(
-    read_parquet_frames(non_empty_paths, columns=keep_cols)
-):
-    print(
-        f"Processing file {i + 1}/{len(non_empty_paths)} with {len(subset_df)} cells: {path}"
-    )
-
-    # CALCULATE PERTURBATION SCORE
-    subset_df["perturbation_score"] = np.nan
-    subset_df["perturbation_auc"] = np.nan
-    if not snakemake.params.skip_perturbation_score:
-        perturbation_score(
-            subset_df,
-            metadata_cols,
-            snakemake.params.perturbation_name_col,
-            snakemake.params.control_key,
-        )
-
-    for col in subset_df.columns:
-        if is_numeric_dtype(subset_df[col]):
-            subset_df[col] = subset_df[col].astype("float32")
-
-    metadata, features = split_cell_data(subset_df, metadata_cols)
-    del subset_df
-    gc.collect()
-
-    metadata, features = prepare_alignment_data(
-        metadata,
-        features,
-        snakemake.params.batch_cols,
-        snakemake.params.perturbation_name_col,
-        snakemake.params.control_key,
-        snakemake.params.perturbation_id_col,
-    )
-
-    features = centerscale_by_batch(features, metadata, "batch_values")
-    embedding_chunks.append(pca.transform(features).astype(np.float32))
-    metadata_chunks.append(metadata)
-    del features
-    gc.collect()
+align_n_jobs = int(getattr(snakemake.params, "align_n_jobs", 1) or 1)
+print(f"Embedding {len(non_empty_paths)} files with align_n_jobs={align_n_jobs}")
+metadata, embeddings = embed_files(
+    non_empty_paths,
+    n_jobs=align_n_jobs,
+    columns=keep_cols,
+    metadata_cols=metadata_cols,
+    pca=pca,
+    batch_cols=snakemake.params.batch_cols,
+    pert_col=snakemake.params.perturbation_name_col,
+    control_key=snakemake.params.control_key,
+    pert_id_col=snakemake.params.perturbation_id_col,
+    skip_perturbation_score=snakemake.params.skip_perturbation_score,
+)
 
 ## Step 3: TVN over all cells, then write
 
-metadata = pd.concat(metadata_chunks, ignore_index=True)
-embeddings = np.concatenate(embedding_chunks)
-del metadata_chunks, embedding_chunks
 gc.collect()
 print(f"Running TVN on {embeddings.shape[0]} cells x {embeddings.shape[1]} components")
 
